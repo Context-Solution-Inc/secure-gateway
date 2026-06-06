@@ -1,4 +1,4 @@
-# Secure Device Relay — M1 build tooling.
+# Secure Device Relay — M1 (relay) + M2 (auth & license) build tooling.
 
 BINARY      := relay
 PKG         := github.com/lley154/secure-gateway
@@ -14,14 +14,17 @@ LDFLAGS     := -s -w \
 SOAK_CONNS    ?= 1000
 SOAK_DURATION ?= 5s
 
-.PHONY: all build relay devtoken test race vet fmt lint soak docker keys clean
+.PHONY: all build relay auth devtoken test race vet fmt lint soak docker docker-auth keys clean
 
 all: vet test build
 
-build: relay devtoken
+build: relay auth devtoken
 
 relay:
 	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/$(BINARY) ./cmd/relay
+
+auth:
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o bin/auth ./cmd/auth
 
 devtoken:
 	CGO_ENABLED=0 go build -trimpath -o bin/devtoken ./cmd/devtoken
@@ -49,6 +52,13 @@ docker:
 	  --build-arg COMMIT=$(COMMIT) \
 	  --build-arg BUILD_DATE=$(BUILD_DATE) \
 	  -t secure-gateway/relay:$(VERSION) .
+
+docker-auth:
+	docker build -f Dockerfile.auth \
+	  --build-arg VERSION=$(VERSION) \
+	  --build-arg COMMIT=$(COMMIT) \
+	  --build-arg BUILD_DATE=$(BUILD_DATE) \
+	  -t secure-gateway/auth:$(VERSION) .
 
 # Generate a dev signing keypair for local runs (relay verifies with the .pub).
 keys:

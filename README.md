@@ -6,9 +6,9 @@ ends dial *out* to the relay over `wss://`; the relay pairs them and forwards
 **end-to-end-encrypted** frames it cannot read. See
 [`prd-secure-mobile-desktop-relay.md`](./prd-secure-mobile-desktop-relay.md).
 
-## Status: M1 — Relay core
+## Status: M1 — Relay core, M2 — Auth & licensing
 
-This repository currently implements **M1**, the Go relay server:
+**M1**, the Go relay server:
 
 - `wss` WebSocket endpoint (`/v1/connect`) with asymmetric JWT auth verified
   **before** the upgrade (ES256/EdDSA, JWKS-ready), claims-only routing.
@@ -22,18 +22,34 @@ This repository currently implements **M1**, the Go relay server:
 - Graceful drain on `SIGTERM`, Prometheus metrics (`/metrics`), structured logs.
 - Distroless, static, non-root container.
 
-The Auth & License Service (accounts, Stripe, pairing) and the client SDKs are
-**not** in this milestone; `cmd/auth` is a reserved placeholder. Tokens for
-development/tests are minted by `cmd/devtoken`, standing in for that service.
+**M2**, the Auth & License Service (`cmd/auth`):
+
+- Stripe-driven licensing: signed-webhook ingestion (idempotent, durable, with a
+  dead-letter retry queue) mirrors subscription state; license behavior is
+  derived per PRD §6.3 (valid / grace / revoked / suspended). Nightly
+  reconciliation heals the mirror against missed webhooks.
+- Connection-token issue/refresh (ES256/EdDSA JWTs) **only** for valid licenses,
+  with re-validation on refresh; opaque rotating refresh tokens.
+- License-key provisioning per `max_pairs`, device registration, and a minimal
+  pairing API (the QR/E2EE flow lands in M3).
+- Immediate cutoff: revocations published to the shared Redis channel close live
+  relay sessions (`4004`) within ≤ 2 s.
+- A `Store` interface with in-memory (tests) and Postgres (prod) implementations,
+  a `/.well-known/jwks.json` endpoint the relay verifies against, and the same
+  distroless/static/non-root container hardening as the relay.
+
+Client SDKs (M4) and the QR pairing + X25519/HKDF/XChaCha20 E2EE (M3) are not yet
+implemented. `cmd/devtoken` still mints tokens for relay-only dev/tests.
 
 ## Layout
 
 ```
 cmd/relay        relay server entrypoint
-cmd/auth         placeholder for the M2 Auth & License Service
+cmd/auth         Auth & License Service entrypoint (M2)
 cmd/devtoken     dev CLI: generate keys and mint test connection tokens
 internal/config  RELAY_* env configuration
 internal/token   JWT claims + asymmetric verification (static-PEM / JWKS)
+internal/signer  JWT minting + JWKS (auth service signs; relay never links it)
 internal/backplane          slot/routing/revocation interface
 internal/backplane/memory   in-memory single-instance backplane
 internal/backplane/redis    go-redis backplane (Lua claims + pub/sub)
@@ -42,9 +58,21 @@ internal/relay/session      connection lifecycle (read/write/monitor pumps)
 internal/relay/hub          per-instance registry, routing, presence
 internal/relay/server       HTTP surface, /v1/connect, TLS, drain
 internal/metrics, logging   Prometheus collectors, structured logging
+-- Auth & License Service (M2) --
+internal/authconfig         AUTH_* env configuration
+internal/authmetrics        auth_* Prometheus collectors
+internal/authstore          Store interface + domain types
+internal/authstore/memory   in-memory store (tests, hermetic E2E)
+internal/authstore/postgres pgx store + embedded SQL migrations (prod)
+internal/authstore/storetest shared store conformance suite
+internal/license            entitlement rules (§6.3) + license-key generation
+internal/billing            Stripe webhook verify/dispatch, reconcile, revocation
+internal/billing/fake       hermetic Stripe test double (API + signed webhooks)
+internal/authservice        HTTP handlers, token issue/refresh, JWKS, account auth
 test/testclient  reusable Go relay client
 test/integration end-to-end tests (echo, lifecycle, slots, revocation, drain,
-                 observability, cross-instance over Redis)
+                 observability, cross-instance over Redis, auth subscription
+                 lifecycle)
 test/soak        build-tagged idle-connection leak soak
 ```
 
@@ -117,6 +145,84 @@ docker compose up --build
 | `RELAY_SHUTDOWN_DRAIN` | `30s` | graceful drain budget |
 | `RELAY_LOG_LEVEL` / `RELAY_LOG_FORMAT` | `info` / `json` | logging |
 | `RELAY_INSTANCE_ID` | auto | overrideable instance identity |
+
+## Auth & License Service (M2)
+
+HTTP/JSON API (TLS in prod, or plain HTTP behind a proxy):
+
+| Method & path | Auth | Purpose |
+|---|---|---|
+| `POST /v1/webhooks/stripe` | Stripe signature | Ingest subscription events (idempotent, durable) |
+| `POST /v1/accounts` | admin key | Provision an account credential (seam for the account backend) |
+| `POST /v1/devices` | account secret | Register a mobile/desktop device |
+| `POST /v1/pairings` | account secret | Create a pairing (license capacity checked) → `pair_id` |
+| `POST /v1/token` | account secret | Issue a connection JWT + refresh token (valid licenses only) |
+| `POST /v1/token/refresh` | refresh token | Rotate; re-checks license validity |
+| `GET /.well-known/jwks.json` | — | Public keys the relay verifies against |
+| `GET /healthz`, `GET /metrics` | — | Health + Prometheus |
+
+### Run the auth service locally
+
+```sh
+make keys                                    # writes ./keys/relay.key.json (signing key)
+AUTH_JWT_ISSUER=https://auth.example.com \
+AUTH_JWT_SIGNING_KEY_FILE=./keys/relay.key.json \
+AUTH_STORE=memory \
+AUTH_BACKPLANE=memory \
+AUTH_STRIPE_WEBHOOK_SECRET=whsec_test \
+AUTH_ADMIN_KEY=dev_admin_key \
+AUTH_LISTEN_ADDR=127.0.0.1:8080 \
+  ./bin/auth
+```
+
+Point the relay at its JWKS with `RELAY_JWKS_URL=http://127.0.0.1:8080/.well-known/jwks.json`
+(use the shared Redis backplane on both so revocations propagate). `docker
+compose up` brings up the full stack (auth + relay + Redis + Postgres).
+
+### Subscription lifecycle (M2 exit criterion)
+
+The hermetic end-to-end test drives **purchase → use → fail payment → grace →
+cancel → cutoff** with a fake Stripe (real signature scheme) and a shared
+backplane, asserting the relay closes sessions `4004` on cancellation:
+
+```sh
+go test ./test/integration/ -run TestSubscriptionLifecycleE2E -v
+```
+
+The Postgres store is covered by the same conformance suite the memory store
+passes; run it against a disposable database:
+
+```sh
+AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable' \
+  go test ./internal/authstore/postgres/
+```
+
+## Configuration (auth, env, `AUTH_` prefix)
+
+| Var | Default | Purpose |
+|---|---|---|
+| `AUTH_LISTEN_ADDR` | `:8080` | bind address |
+| `AUTH_TLS_CERT_FILE` / `AUTH_TLS_KEY_FILE` | — | enable TLS; empty ⇒ plain HTTP behind a proxy |
+| `AUTH_TLS_MIN_VERSION` | `1.2` | `1.2` or `1.3` |
+| `AUTH_STORE` | `memory` | `memory` or `postgres` |
+| `AUTH_DB_DSN` | — | Postgres DSN (required for `postgres`) |
+| `AUTH_BACKPLANE` | `memory` | `memory` or `redis` (revocation publish) |
+| `AUTH_REDIS_ADDR` / `AUTH_REDIS_PASSWORD` / `AUTH_REDIS_DB` | — | go-redis connection |
+| `AUTH_JWT_ISSUER` | — | token `iss` (required; must match the relay's) |
+| `AUTH_JWT_AUDIENCE` | `relay` | token `aud` |
+| `AUTH_JWT_ALG` | `ES256` | `ES256` or `EdDSA` |
+| `AUTH_JWT_KID` | `auth-1` | key id (when loading a raw PEM key) |
+| `AUTH_JWT_SIGNING_KEY_FILE` | — | signing key (required); `devtoken` JSON keyfile or PKCS#8 PEM |
+| `AUTH_TOKEN_TTL` | `10m` | connection JWT lifetime |
+| `AUTH_REFRESH_TTL` | `720h` | refresh token lifetime |
+| `AUTH_GRACE_PERIOD` | `168h` | `past_due` grace window (PRD default 7 days) |
+| `AUTH_STRIPE_WEBHOOK_SECRET` | — | webhook signature secret (required) |
+| `AUTH_STRIPE_SECRET_KEY` | — | Stripe API key; enables nightly reconciliation |
+| `AUTH_RECONCILE_INTERVAL` | `24h` | reconciliation cadence |
+| `AUTH_ADMIN_KEY` | — | gates `POST /v1/accounts`; empty ⇒ disabled |
+| `AUTH_SHUTDOWN_DRAIN` | `30s` | graceful shutdown budget |
+| `AUTH_LOG_LEVEL` / `AUTH_LOG_FORMAT` | `info` / `json` | logging |
+| `AUTH_INSTANCE_ID` | auto | overrideable instance identity |
 
 ## Close codes (Appendix B)
 

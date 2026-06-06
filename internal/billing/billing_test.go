@@ -1,0 +1,247 @@
+package billing_test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	stripe "github.com/stripe/stripe-go/v82"
+
+	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/lley154/secure-gateway/internal/authstore/memory"
+	"github.com/lley154/secure-gateway/internal/backplane"
+	bpmem "github.com/lley154/secure-gateway/internal/backplane/memory"
+	"github.com/lley154/secure-gateway/internal/billing"
+	"github.com/lley154/secure-gateway/internal/billing/fake"
+	"github.com/lley154/secure-gateway/internal/license"
+)
+
+const secret = "whsec_test_secret"
+
+type fixture struct {
+	store *memory.Store
+	bp    *bpmem.Backplane
+	api   *fake.API
+	wh    *fake.Webhook
+	proc  *billing.Processor
+	revs  <-chan backplane.RevocationEvent
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	store := memory.New()
+	bp := bpmem.New(time.Minute, 64)
+	api := fake.NewAPI()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	revs, err := bp.SubscribeRevocations(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proc := billing.NewProcessor(billing.Config{
+		Store: store, Backplane: bp, API: api,
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Grace:         168 * time.Hour,
+		WebhookSecret: secret,
+	})
+	return &fixture{store: store, bp: bp, api: api, wh: fake.NewWebhook(secret), proc: proc, revs: revs}
+}
+
+// deliver verifies, records, and processes an event the way the HTTP handler
+// would, asserting it was treated as new.
+func (f *fixture) deliver(t *testing.T, body []byte, sig string) {
+	t.Helper()
+	ctx := context.Background()
+	ev, err := f.proc.Verify(body, sig)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	inserted, err := f.proc.Record(ctx, ev, body)
+	if err != nil || !inserted {
+		t.Fatalf("record: inserted=%v err=%v", inserted, err)
+	}
+	if err := f.proc.Process(ctx, ev); err != nil {
+		t.Fatalf("process %s: %v", ev.Type, err)
+	}
+}
+
+func TestVerifyRejectsBadSignature(t *testing.T) {
+	f := newFixture(t)
+	body, _ := f.wh.Event(stripe.EventTypeInvoicePaid, fake.InvoiceObject("in_1", "sub_1"))
+	if _, err := f.proc.Verify(body, "t=1,v1=deadbeef"); err == nil {
+		t.Fatal("expected signature verification to fail")
+	}
+}
+
+func TestIdempotentRecord(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	body, sig := f.wh.Event(stripe.EventTypeInvoicePaid, fake.InvoiceObject("in_1", "sub_x"))
+	ev, err := f.proc.Verify(body, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := f.proc.Record(ctx, ev, body)
+	if err != nil || !first {
+		t.Fatalf("first record: %v %v", first, err)
+	}
+	second, err := f.proc.Record(ctx, ev, body)
+	if err != nil || second {
+		t.Fatalf("second record should be idempotent: inserted=%v err=%v", second, err)
+	}
+}
+
+func TestCheckoutProvisionsLicense(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// The checkout fetch reads the subscription from the API.
+	f.api.Set(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1))
+	body, sig := f.wh.Event(stripe.EventTypeCheckoutSessionCompleted,
+		fake.CheckoutCompletedObject("cs_1", "cus_1", "acct_1", "sub_1"))
+	f.deliver(t, body, sig)
+
+	acct, err := f.store.GetAccountByCustomer(ctx, "cus_1")
+	if err != nil || acct.ID != "acct_1" {
+		t.Fatalf("account link: %+v err=%v", acct, err)
+	}
+	lics, _ := f.store.ListLicensesBySubscription(ctx, "sub_1")
+	if len(lics) != 1 || lics[0].Status != authstore.LicenseActive {
+		t.Fatalf("license provisioning: %+v", lics)
+	}
+	sub, _ := f.store.GetSubscription(ctx, "sub_1")
+	if license.Evaluate(sub, time.Now()) != license.Valid {
+		t.Fatalf("active sub should be Valid: %+v", sub)
+	}
+	// Re-delivering an equivalent created event must not double-provision.
+	body2, sig2 := f.wh.Event(stripe.EventTypeCustomerSubscriptionCreated,
+		fake.MarshalSubscription(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1)))
+	f.deliver(t, body2, sig2)
+	lics, _ = f.store.ListLicensesBySubscription(ctx, "sub_1")
+	if len(lics) != 1 {
+		t.Fatalf("idempotent provisioning expected 1 license, got %d", len(lics))
+	}
+}
+
+func TestGracePreservesIssuance(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.api.Set(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1))
+	body, sig := f.wh.Event(stripe.EventTypeCheckoutSessionCompleted,
+		fake.CheckoutCompletedObject("cs_1", "cus_1", "acct_1", "sub_1"))
+	f.deliver(t, body, sig)
+
+	// Payment failed → grace.
+	body, sig = f.wh.Event(stripe.EventTypeInvoicePaymentFailed, fake.InvoiceObject("in_1", "sub_1"))
+	f.deliver(t, body, sig)
+	sub, _ := f.store.GetSubscription(ctx, "sub_1")
+	if got := license.Evaluate(sub, time.Now()); got != license.Grace {
+		t.Fatalf("after payment_failed want Grace, got %v (%+v)", got, sub)
+	}
+	if !license.Issuable(license.Evaluate(sub, time.Now())) {
+		t.Fatal("grace must remain issuable")
+	}
+	// Invoice paid → grace cleared, back to valid.
+	body, sig = f.wh.Event(stripe.EventTypeInvoicePaid, fake.InvoiceObject("in_2", "sub_1"))
+	f.deliver(t, body, sig)
+	sub, _ = f.store.GetSubscription(ctx, "sub_1")
+	if license.Evaluate(sub, time.Now()) != license.Valid {
+		t.Fatalf("after invoice.paid want Valid, got %+v", sub)
+	}
+}
+
+func TestCancelRevokesAndPublishes(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	f.api.Set(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1))
+	body, sig := f.wh.Event(stripe.EventTypeCheckoutSessionCompleted,
+		fake.CheckoutCompletedObject("cs_1", "cus_1", "acct_1", "sub_1"))
+	f.deliver(t, body, sig)
+	lics, _ := f.store.ListLicensesBySubscription(ctx, "sub_1")
+	licID := lics[0].ID
+	// An active pairing exists on the license.
+	if err := f.store.CreatePairing(ctx, authstore.Pairing{
+		PairID: "pair_1", LicenseID: licID, AccountID: "acct_1",
+		MobileDeviceID: "dev_m", DesktopDeviceID: "dev_d", Status: authstore.PairingActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body, sig = f.wh.Event(stripe.EventTypeCustomerSubscriptionDeleted,
+		fake.MarshalSubscription(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusCanceled, 1)))
+	f.deliver(t, body, sig)
+
+	// License revoked, pairing revoked, and a revocation published for the pair.
+	got, _ := f.store.GetLicense(ctx, licID)
+	if got.Status != authstore.LicenseRevoked {
+		t.Fatalf("license not revoked: %+v", got)
+	}
+	pr, _ := f.store.GetPairing(ctx, "pair_1")
+	if pr.Status != authstore.PairingRevoked {
+		t.Fatalf("pairing not revoked: %+v", pr)
+	}
+	select {
+	case ev := <-f.revs:
+		if ev.PairID != "pair_1" {
+			t.Fatalf("revocation for wrong pair: %+v", ev)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no revocation published within 2s")
+	}
+}
+
+func TestDeadLetterAfterMaxAttempts(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// invoice.payment_failed for a subscription that was never mirrored always
+	// fails (unknown subscription), so it should dead-letter after retries.
+	body, sig := f.wh.Event(stripe.EventTypeInvoicePaymentFailed, fake.InvoiceObject("in_1", "sub_missing"))
+	ev, err := f.proc.Verify(body, sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.proc.Record(ctx, ev, body); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.proc.Process(ctx, ev); err == nil {
+		t.Fatal("expected processing to fail for unknown subscription")
+	}
+	// Retry until dead-lettered.
+	for i := 0; i < 10; i++ {
+		_, dead, err := f.proc.RetryFailed(ctx, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dead == 1 {
+			break
+		}
+	}
+	deadEvents, _ := f.store.ListWebhookEventsByStatus(ctx, authstore.WebhookDead, 0)
+	if len(deadEvents) != 1 {
+		t.Fatalf("expected 1 dead-lettered event, got %d", len(deadEvents))
+	}
+}
+
+func TestReconcileHealsMirror(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	// Seed an account link and a stale active mirror, then have Stripe report
+	// the subscription canceled. Reconciliation must heal the mirror + revoke.
+	f.store.UpsertAccount(ctx, authstore.Account{ID: "acct_1", StripeCustomerID: "cus_1"})
+	f.store.UpsertSubscription(ctx, authstore.Subscription{ID: "sub_1", AccountID: "acct_1", Status: authstore.SubActive, MaxPairs: 1})
+	f.store.CreateLicense(ctx, authstore.License{ID: "lic_1", AccountID: "acct_1", SubscriptionID: "sub_1", Status: authstore.LicenseActive})
+
+	f.api.Set(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusCanceled, 1))
+	if err := f.proc.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sub, _ := f.store.GetSubscription(ctx, "sub_1")
+	if sub.Status != authstore.SubCanceled {
+		t.Fatalf("mirror not healed: %+v", sub)
+	}
+	got, _ := f.store.GetLicense(ctx, "lic_1")
+	if got.Status != authstore.LicenseRevoked {
+		t.Fatalf("license not revoked by reconcile: %+v", got)
+	}
+}
