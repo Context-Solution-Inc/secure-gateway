@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1
+#
+# Auth & License Service (M2). Same hardened, static, distroless build as the
+# relay. SQL migrations are embedded in the binary (go:embed), so no files are
+# copied into the runtime image.
+
+# --- Build stage ---
+FROM golang:1.26 AS build
+
+WORKDIR /src
+
+# Cache module downloads.
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -trimpath \
+    -ldflags="-s -w \
+      -X github.com/lley154/secure-gateway/internal/version.Version=${VERSION} \
+      -X github.com/lley154/secure-gateway/internal/version.Commit=${COMMIT} \
+      -X github.com/lley154/secure-gateway/internal/version.BuildDate=${BUILD_DATE}" \
+    -o /out/auth ./cmd/auth
+
+# --- Runtime stage ---
+# distroless/static:nonroot — no shell, no package manager, non-root user.
+# Pin by digest in production: gcr.io/distroless/static:nonroot@sha256:<digest>
+FROM gcr.io/distroless/static:nonroot
+
+COPY --from=build /out/auth /auth
+
+# HTTP API + JWKS + webhook endpoint. Runs as the distroless 'nonroot' user.
+EXPOSE 8080
+USER nonroot:nonroot
+
+ENTRYPOINT ["/auth"]

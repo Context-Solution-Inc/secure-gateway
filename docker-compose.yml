@@ -1,13 +1,15 @@
-# Local multi-instance-capable relay + Redis backplane.
+# Local full stack: Auth & License Service (M2) + relay (M1) + Redis backplane
+# + Postgres. The auth service holds the JWT signing key and serves the JWKS the
+# relay verifies tokens against; both share the Redis backplane for revocations.
 #
-# Before `docker compose up`, generate a dev keypair the relay verifies tokens
-# against (the Auth & License Service serves this in production):
+# Before `docker compose up`, generate a dev signing keypair (the auth service
+# signs with the private key; it also serves the public JWKS):
 #
 #   go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
 #
-# Then mint tokens for clients with:
-#   go run ./cmd/devtoken -key ./keys/relay.key.json -role mobile  -pair p1 ...
-#   go run ./cmd/devtoken -key ./keys/relay.key.json -role desktop -pair p1 ...
+# Then exercise the lifecycle by sending Stripe test webhooks to
+# http://localhost:8080/v1/webhooks/stripe (e.g. via `stripe listen`), or use
+# the auth API directly. The relay listens on :8443 (plain HTTP behind a proxy).
 
 services:
   redis:
@@ -21,6 +23,57 @@ services:
       timeout: 3s
       retries: 5
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: authpass
+      POSTGRES_DB: auth
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  auth:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+      args:
+        VERSION: dev
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      AUTH_LISTEN_ADDR: ":8080"
+      AUTH_JWT_ISSUER: "https://auth.example.com"
+      AUTH_JWT_AUDIENCE: "relay"
+      AUTH_JWT_ALG: "ES256"
+      AUTH_JWT_KID: "dev-1"
+      AUTH_JWT_SIGNING_KEY_FILE: "/keys/relay.key.json"
+      AUTH_STORE: "postgres"
+      AUTH_DB_DSN: "postgres://auth:authpass@postgres:5432/auth?sslmode=disable"
+      AUTH_BACKPLANE: "redis"
+      AUTH_REDIS_ADDR: "redis:6379"
+      # Set these to your Stripe test-mode values to drive a real lifecycle:
+      AUTH_STRIPE_WEBHOOK_SECRET: "whsec_replace_me"
+      # AUTH_STRIPE_SECRET_KEY: "sk_test_..."   # enables nightly reconciliation
+      AUTH_ADMIN_KEY: "dev_admin_key"
+      AUTH_LOG_FORMAT: "json"
+    volumes:
+      - ./keys:/keys:ro
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
   relay:
     build:
       context: .
@@ -29,21 +82,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      auth:
+        condition: service_started
     ports:
       - "8443:8443"
     environment:
       RELAY_LISTEN_ADDR: ":8443"
       RELAY_JWT_ISSUER: "https://auth.example.com"
       RELAY_JWT_AUDIENCE: "relay"
-      RELAY_JWT_PUBLIC_KEY_FILE: "/keys/relay.pub.pem"
+      # Verify tokens via the auth service's JWKS (production path) rather than a
+      # static public key file.
+      RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"
       RELAY_BACKPLANE: "redis"
       RELAY_REDIS_ADDR: "redis:6379"
       RELAY_LOG_FORMAT: "json"
       # No TLS cert set: the relay serves plain HTTP, intended to sit behind a
       # TLS-terminating proxy. For direct wss, mount certs and set
       # RELAY_TLS_CERT_FILE / RELAY_TLS_KEY_FILE.
-    volumes:
-      - ./keys:/keys:ro
     # Container hardening (PRD §9.2).
     read_only: true
     cap_drop:
