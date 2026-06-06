@@ -1,0 +1,374 @@
+package authservice
+
+import (
+	"context"
+	"encoding/base64"
+	"errors"
+	"net/http"
+	"time"
+
+	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/lley154/secure-gateway/internal/backplane"
+	"github.com/lley154/secure-gateway/internal/logging"
+	"github.com/lley154/secure-gateway/internal/token"
+)
+
+// pairingQRVersion versions the QR payload schema (FR-2.1, §8.4). A future
+// client uses this to distinguish the relay-pairing QR from the legacy
+// local-sync QR; the legacy fallback itself lives in the client apps, not here.
+const pairingQRVersion = 1
+
+// --- POST /v1/pairing-tokens : desktop issues a one-time pairing token (FR-2.1) ---
+
+type pairingTokenReq struct {
+	LicenseID        string `json:"license_id"`
+	DesktopDeviceID  string `json:"desktop_device_id"`
+	DesktopPublicKey string `json:"desktop_public_key,omitempty"` // base64; optional if already registered
+}
+
+// qrPayload is the versioned QR code content the desktop renders (FR-2.1).
+type qrPayload struct {
+	V               int               `json:"v"`
+	PairingToken    string            `json:"pairing_token"`
+	DesktopPubKey   string            `json:"desktop_pubkey"` // base64
+	DesktopDeviceID string            `json:"desktop_device_id"`
+	Endpoints       map[string]string `json:"endpoints"` // relay, auth
+}
+
+type pairingTokenResp struct {
+	PairingToken string    `json:"pairing_token"`
+	ExpiresIn    int       `json:"expires_in"` // seconds
+	QR           qrPayload `json:"qr"`
+}
+
+func (s *Service) handleCreatePairingToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	accountID, err := s.authenticateAccount(ctx, r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req pairingTokenReq
+	if err := decodeJSON(r, &req); err != nil || req.LicenseID == "" || req.DesktopDeviceID == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	lic, err := s.store.GetLicense(ctx, req.LicenseID)
+	if err != nil || lic.AccountID != accountID {
+		writeErr(w, http.StatusNotFound, "license_not_found")
+		return
+	}
+	// License must currently be valid to start pairing (PRD §6.5 #1).
+	if _, ok := s.licenseIssuable(ctx, lic); !ok {
+		writeErr(w, http.StatusForbidden, "license_invalid")
+		return
+	}
+	// The desktop device must belong to the account with the desktop role.
+	dev, ok := s.deviceForRole(ctx, req.DesktopDeviceID, accountID, token.RoleDesktop)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad_devices")
+		return
+	}
+	// Capacity: pairs in use < max_pairs (FR-2.2). Re-pairing reuses the existing
+	// slot for this desktop, so only a brand-new pair is gated here. The
+	// authoritative check runs again at completion.
+	_, rePair, err := s.activePairingForDesktop(ctx, lic.ID, dev.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	if !rePair {
+		if ok, err := s.capacityAvailable(ctx, lic); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		} else if !ok {
+			writeErr(w, http.StatusConflict, "capacity_exceeded")
+			return
+		}
+	}
+	// Store the desktop's X25519 public key if supplied (the QR needs it).
+	if req.DesktopPublicKey != "" {
+		pub, err := base64.StdEncoding.DecodeString(req.DesktopPublicKey)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_public_key")
+			return
+		}
+		dev.PublicKey = pub
+		if err := s.store.UpsertDevice(ctx, dev); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+	}
+	if len(dev.PublicKey) == 0 {
+		// No key on file and none supplied; the QR cannot carry the desktop key.
+		writeErr(w, http.StatusBadRequest, "missing_public_key")
+		return
+	}
+
+	secret := authstore.NewID("pt")
+	now := s.now()
+	pt := authstore.PairingToken{
+		ID: hashSecret(secret), AccountID: accountID, LicenseID: lic.ID,
+		DesktopDeviceID: dev.ID, ExpiresAt: now.Add(s.pairingTokenTTL),
+	}
+	if err := s.store.CreatePairingToken(ctx, pt); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, pairingTokenResp{
+		PairingToken: secret,
+		ExpiresIn:    int(s.pairingTokenTTL / time.Second),
+		QR: qrPayload{
+			V: pairingQRVersion, PairingToken: secret,
+			DesktopPubKey:   base64.StdEncoding.EncodeToString(dev.PublicKey),
+			DesktopDeviceID: dev.ID,
+			Endpoints:       map[string]string{"relay": s.relayURL, "auth": s.authURL},
+		},
+	})
+}
+
+// --- POST /v1/pairings : mobile completes pairing with the token (FR-2.2) ---
+
+type completePairingReq struct {
+	PairingToken    string `json:"pairing_token"`
+	MobileDeviceID  string `json:"mobile_device_id"`
+	MobilePublicKey string `json:"mobile_public_key"` // base64
+}
+type completePairingResp struct {
+	PairID           string `json:"pair_id"`
+	DesktopPublicKey string `json:"desktop_public_key"` // base64
+}
+
+func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var req completePairingReq
+	if err := decodeJSON(r, &req); err != nil || req.PairingToken == "" || req.MobileDeviceID == "" || req.MobilePublicKey == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// The pairing token itself authorizes this call (FR-2.2); it is bound to the
+	// desktop's account/license at issue time, so the mobile cannot forge them.
+	pt, err := s.store.GetPairingToken(ctx, hashSecret(req.PairingToken))
+	if err != nil || !pt.Active(s.now()) {
+		writeErr(w, http.StatusUnauthorized, "pairing_token_invalid")
+		return
+	}
+	lic, err := s.store.GetLicense(ctx, pt.LicenseID)
+	if err != nil {
+		writeErr(w, http.StatusForbidden, "license_invalid")
+		return
+	}
+	// Re-check validity at completion: the subscription may have lapsed since the
+	// token was issued (PRD §6.5 #1).
+	if _, ok := s.licenseIssuable(ctx, lic); !ok {
+		writeErr(w, http.StatusForbidden, "license_invalid")
+		return
+	}
+	// The mobile device must belong to the token's account with the mobile role.
+	mobile, ok := s.deviceForRole(ctx, req.MobileDeviceID, pt.AccountID, token.RoleMobile)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "bad_devices")
+		return
+	}
+	mobilePub, err := base64.StdEncoding.DecodeString(req.MobilePublicKey)
+	if err != nil || len(mobilePub) == 0 {
+		writeErr(w, http.StatusBadRequest, "bad_public_key")
+		return
+	}
+	desktop, err := s.store.GetDevice(ctx, pt.DesktopDeviceID)
+	if err != nil || len(desktop.PublicKey) == 0 {
+		writeErr(w, http.StatusForbidden, "desktop_unavailable")
+		return
+	}
+
+	// Re-pairing (FR-2.4): if an active pairing already exists for this license
+	// with the same desktop, replace the device entry in place rather than
+	// consuming another license slot.
+	existing, rePair, err := s.activePairingForDesktop(ctx, lic.ID, pt.DesktopDeviceID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	pairID := authstore.NewID("pair")
+	if rePair {
+		pairID = existing.PairID
+	} else {
+		// New pairing: enforce capacity (pairs in use < max_pairs, FR-2.2).
+		if ok, err := s.capacityAvailable(ctx, lic); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		} else if !ok {
+			writeErr(w, http.StatusConflict, "capacity_exceeded")
+			return
+		}
+	}
+
+	// Consume the token first (atomic single-use) so a replayed completion can
+	// never create a second pairing or mutate state (FR-2.1).
+	if err := s.store.ConsumePairingToken(ctx, pt.ID, pairID, s.now()); err != nil {
+		if errors.Is(err, authstore.ErrConflict) {
+			writeErr(w, http.StatusConflict, "pairing_token_used")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
+	// Persist the mobile's X25519 public key on its device record.
+	mobile.PublicKey = mobilePub
+	if err := s.store.UpsertDevice(ctx, mobile); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
+	if rePair {
+		if err := s.store.UpdatePairingDevices(ctx, pairID, mobile.ID, desktop.ID); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+		// Cut any live session for the replaced device(s) (FR-2.4).
+		s.publishRevocation(ctx, backplane.RevocationEvent{PairID: pairID})
+	} else {
+		p := authstore.Pairing{
+			PairID: pairID, LicenseID: lic.ID, AccountID: pt.AccountID,
+			MobileDeviceID: mobile.ID, DesktopDeviceID: desktop.ID,
+			Status: authstore.PairingActive, CreatedAt: s.now(),
+		}
+		if err := s.store.CreatePairing(ctx, p); err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, completePairingResp{
+		PairID:           pairID,
+		DesktopPublicKey: base64.StdEncoding.EncodeToString(desktop.PublicKey),
+	})
+}
+
+// --- POST /v1/pairing-tokens/poll : desktop learns pair_id + mobile key (Appendix C step 3) ---
+
+type pollPairingReq struct {
+	PairingToken string `json:"pairing_token"`
+}
+type pollPairingResp struct {
+	Status          string `json:"status"` // pending | completed | expired
+	PairID          string `json:"pair_id,omitempty"`
+	MobilePublicKey string `json:"mobile_public_key,omitempty"` // base64
+}
+
+func (s *Service) handlePollPairingToken(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	accountID, err := s.authenticateAccount(ctx, r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req pollPairingReq
+	if err := decodeJSON(r, &req); err != nil || req.PairingToken == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	pt, err := s.store.GetPairingToken(ctx, hashSecret(req.PairingToken))
+	if err != nil || pt.AccountID != accountID {
+		writeErr(w, http.StatusNotFound, "pairing_token_not_found")
+		return
+	}
+	switch {
+	case !pt.ConsumedAt.IsZero():
+		pairing, err := s.store.GetPairing(ctx, pt.ResultPairID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+		mobile, err := s.store.GetDevice(ctx, pairing.MobileDeviceID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+		writeJSON(w, http.StatusOK, pollPairingResp{
+			Status: "completed", PairID: pt.ResultPairID,
+			MobilePublicKey: base64.StdEncoding.EncodeToString(mobile.PublicKey),
+		})
+	case !s.now().Before(pt.ExpiresAt):
+		writeJSON(w, http.StatusOK, pollPairingResp{Status: "expired"})
+	default:
+		writeJSON(w, http.StatusOK, pollPairingResp{Status: "pending"})
+	}
+}
+
+// --- POST /v1/pairings/unpair : user-initiated unpairing (FR-2.5) ---
+
+type unpairReq struct {
+	PairID string `json:"pair_id"`
+}
+
+func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	accountID, err := s.authenticateAccount(ctx, r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req unpairReq
+	if err := decodeJSON(r, &req); err != nil || req.PairID == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	p, err := s.store.GetPairing(ctx, req.PairID)
+	if err != nil || p.AccountID != accountID {
+		writeErr(w, http.StatusNotFound, "pairing_not_found")
+		return
+	}
+	if err := s.store.SetPairingStatus(ctx, p.PairID, authstore.PairingRevoked); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	// Free the slot and cut live sessions (FR-2.5).
+	s.publishRevocation(ctx, backplane.RevocationEvent{PairID: p.PairID})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// --- helpers ---
+
+// capacityAvailable reports whether the license has a free pair slot
+// (pairs in use < max_pairs, FR-2.2).
+func (s *Service) capacityAvailable(ctx context.Context, lic authstore.License) (bool, error) {
+	sub, err := s.store.GetSubscription(ctx, lic.SubscriptionID)
+	if err != nil {
+		return false, err
+	}
+	inUse, err := s.store.ActivePairCount(ctx, lic.ID)
+	if err != nil {
+		return false, err
+	}
+	return inUse < sub.MaxPairs, nil
+}
+
+// activePairingForDesktop finds an active pairing for the license bound to the
+// given desktop device, used to detect re-pairing (FR-2.4).
+func (s *Service) activePairingForDesktop(ctx context.Context, licenseID, desktopDeviceID string) (authstore.Pairing, bool, error) {
+	pairings, err := s.store.ListActivePairingsByLicense(ctx, licenseID)
+	if err != nil {
+		return authstore.Pairing{}, false, err
+	}
+	for _, p := range pairings {
+		if p.DesktopDeviceID == desktopDeviceID {
+			return p, true, nil
+		}
+	}
+	return authstore.Pairing{}, false, nil
+}
+
+// publishRevocation announces a revocation if a backplane is configured. A
+// failure is logged but does not fail the request: the pairing is already
+// marked revoked in the durable store, so token issuance/refresh is refused
+// regardless (PRD §6.5 #1), and the next reconcile/connect closes the session.
+func (s *Service) publishRevocation(ctx context.Context, ev backplane.RevocationEvent) {
+	if s.bp == nil {
+		return
+	}
+	if err := s.bp.PublishRevocation(ctx, ev); err != nil {
+		s.log.Error("publish revocation failed", "pair_id", ev.PairID, logging.FieldReason, err.Error())
+	}
+}

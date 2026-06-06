@@ -59,6 +59,11 @@ type Config struct {
 	TokenTTL       time.Duration // AUTH_TOKEN_TTL (connection JWT lifetime)
 	RefreshTTL     time.Duration // AUTH_REFRESH_TTL (refresh token lifetime)
 
+	// Pairing (QR flow, FR-2.1)
+	PairingTokenTTL time.Duration // AUTH_PAIRING_TOKEN_TTL (one-time QR token lifetime; ≤ 5m)
+	RelayURL        string        // AUTH_RELAY_URL (advertised in the QR endpoints)
+	PublicURL       string        // AUTH_PUBLIC_URL (this service's URL, advertised in the QR endpoints)
+
 	// Licensing
 	GracePeriod time.Duration // AUTH_GRACE_PERIOD (past_due grace; PRD default 7d)
 
@@ -105,6 +110,8 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 		StripeSecretKey:     str(getenv, "AUTH_STRIPE_SECRET_KEY", ""),
 		StripeWebhookSecret: str(getenv, "AUTH_STRIPE_WEBHOOK_SECRET", ""),
 		AdminKey:            str(getenv, "AUTH_ADMIN_KEY", ""),
+		RelayURL:            str(getenv, "AUTH_RELAY_URL", ""),
+		PublicURL:           str(getenv, "AUTH_PUBLIC_URL", ""),
 		LogLevel:            str(getenv, "AUTH_LOG_LEVEL", "info"),
 		LogFormat:           str(getenv, "AUTH_LOG_FORMAT", "json"),
 	}
@@ -124,6 +131,9 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 		collect(err)
 	}
 	if c.RefreshTTL, err = duration(getenv, "AUTH_REFRESH_TTL", 720*time.Hour); err != nil {
+		collect(err)
+	}
+	if c.PairingTokenTTL, err = duration(getenv, "AUTH_PAIRING_TOKEN_TTL", 5*time.Minute); err != nil {
 		collect(err)
 	}
 	if c.GracePeriod, err = duration(getenv, "AUTH_GRACE_PERIOD", 168*time.Hour); err != nil {
@@ -196,6 +206,9 @@ func (c *Config) validate() error {
 	}
 	if c.RefreshTTL <= 0 {
 		errs = append(errs, errors.New("AUTH_REFRESH_TTL must be positive"))
+	}
+	if c.PairingTokenTTL <= 0 || c.PairingTokenTTL > 5*time.Minute {
+		errs = append(errs, errors.New("AUTH_PAIRING_TOKEN_TTL must be positive and ≤ 5m (FR-2.1)"))
 	}
 
 	switch c.LogLevel {

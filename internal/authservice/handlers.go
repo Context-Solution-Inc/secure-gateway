@@ -122,72 +122,6 @@ func (s *Service) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, deviceResp{DeviceID: dev.ID})
 }
 
-// --- Pairings (minimal; full QR/E2EE flow is M3) ---
-
-type pairingReq struct {
-	LicenseID       string `json:"license_id"`
-	MobileDeviceID  string `json:"mobile_device_id"`
-	DesktopDeviceID string `json:"desktop_device_id"`
-}
-type pairingResp struct {
-	PairID string `json:"pair_id"`
-}
-
-func (s *Service) handleCreatePairing(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	accountID, err := s.authenticateAccount(ctx, r)
-	if err != nil {
-		writeErr(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-	var req pairingReq
-	if err := decodeJSON(r, &req); err != nil || req.LicenseID == "" || req.MobileDeviceID == "" || req.DesktopDeviceID == "" {
-		writeErr(w, http.StatusBadRequest, "bad_request")
-		return
-	}
-	lic, err := s.store.GetLicense(ctx, req.LicenseID)
-	if err != nil || lic.AccountID != accountID {
-		writeErr(w, http.StatusNotFound, "license_not_found")
-		return
-	}
-	// License must currently be valid to create a new pairing (PRD §6.5 #1).
-	if _, ok := s.licenseIssuable(ctx, lic); !ok {
-		writeErr(w, http.StatusForbidden, "license_invalid")
-		return
-	}
-	sub, err := s.store.GetSubscription(ctx, lic.SubscriptionID)
-	if err != nil {
-		writeErr(w, http.StatusForbidden, "license_invalid")
-		return
-	}
-	// Capacity: pairs in use < max_pairs (FR-2.2).
-	inUse, err := s.store.ActivePairCount(ctx, lic.ID)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error")
-		return
-	}
-	if inUse >= sub.MaxPairs {
-		writeErr(w, http.StatusConflict, "capacity_exceeded")
-		return
-	}
-	// Devices must belong to the account with the expected roles.
-	if !s.deviceHasRole(ctx, req.MobileDeviceID, accountID, token.RoleMobile) ||
-		!s.deviceHasRole(ctx, req.DesktopDeviceID, accountID, token.RoleDesktop) {
-		writeErr(w, http.StatusBadRequest, "bad_devices")
-		return
-	}
-	p := authstore.Pairing{
-		PairID: authstore.NewID("pair"), LicenseID: lic.ID, AccountID: accountID,
-		MobileDeviceID: req.MobileDeviceID, DesktopDeviceID: req.DesktopDeviceID,
-		Status: authstore.PairingActive, CreatedAt: s.now(),
-	}
-	if err := s.store.CreatePairing(ctx, p); err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error")
-		return
-	}
-	writeJSON(w, http.StatusOK, pairingResp{PairID: p.PairID})
-}
-
 // --- Connection tokens ---
 
 type tokenReq struct {
@@ -388,9 +322,14 @@ func (s *Service) licenseIssuable(ctx context.Context, lic authstore.License) (a
 	return lic, license.Issuable(license.Evaluate(sub, s.now()))
 }
 
-func (s *Service) deviceHasRole(ctx context.Context, deviceID, accountID string, role token.Role) bool {
+// deviceForRole fetches a device and verifies it belongs to accountID with the
+// expected role.
+func (s *Service) deviceForRole(ctx context.Context, deviceID, accountID string, role token.Role) (authstore.Device, bool) {
 	dev, err := s.store.GetDevice(ctx, deviceID)
-	return err == nil && dev.AccountID == accountID && dev.Role == role
+	if err != nil || dev.AccountID != accountID || dev.Role != role {
+		return authstore.Device{}, false
+	}
+	return dev, true
 }
 
 func pairingHasDevice(p authstore.Pairing, dev authstore.Device) bool {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/coder/websocket"
+	stripe "github.com/stripe/stripe-go/v82"
 
 	"github.com/lley154/secure-gateway/internal/authstore"
 	"github.com/lley154/secure-gateway/internal/billing/fake"
@@ -35,11 +35,11 @@ func TestSubscriptionLifecycleE2E(t *testing.T) {
 	}
 	licenseID := lics[0].ID
 
-	// Register devices and pair them (minimal M2 pairing).
+	// Register devices and pair them via the M3 QR pairing-token flow.
 	secret := a.createAccount(t, "acct_e2e")
 	mobileID := a.registerDevice(t, secret, "mobile")
 	desktopID := a.registerDevice(t, secret, "desktop")
-	pairID := a.createPairing(t, secret, licenseID, mobileID, desktopID)
+	pairID, _, _ := a.qrPair(t, secret, licenseID, mobileID, desktopID)
 
 	// 2. USE: issue tokens, connect both ends to the relay, forward a frame.
 	_, mobileTok := a.issueToken(t, secret, mobileID, pairID)

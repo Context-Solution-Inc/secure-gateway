@@ -37,7 +37,10 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 	mux.HandleFunc("POST /v1/webhooks/stripe", svc.handleWebhook)
 	mux.HandleFunc("POST /v1/accounts", svc.handleCreateAccount)
 	mux.HandleFunc("POST /v1/devices", svc.handleRegisterDevice)
-	mux.HandleFunc("POST /v1/pairings", svc.handleCreatePairing)
+	mux.HandleFunc("POST /v1/pairing-tokens", svc.handleCreatePairingToken)
+	mux.HandleFunc("POST /v1/pairing-tokens/poll", svc.handlePollPairingToken)
+	mux.HandleFunc("POST /v1/pairings", svc.handleCompletePairing)
+	mux.HandleFunc("POST /v1/pairings/unpair", svc.handleUnpair)
 	mux.HandleFunc("POST /v1/token", svc.handleIssueToken)
 	mux.HandleFunc("POST /v1/token/refresh", svc.handleRefreshToken)
 

@@ -12,6 +12,7 @@ require (
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/stripe/stripe-go/v82 v82.5.1
 	go.uber.org/goleak v1.3.0
+	golang.org/x/crypto v0.52.0
 )
 
 require (
@@ -29,8 +30,8 @@ require (
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/sys v0.35.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 	google.golang.org/protobuf v1.36.8 // indirect
 )

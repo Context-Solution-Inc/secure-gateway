@@ -87,10 +87,11 @@ func run() error {
 	})
 
 	svc := authservice.NewService(authservice.Deps{
-		Store: store, Signer: sgn, Processor: proc, Metrics: m, Logger: log,
+		Store: store, Signer: sgn, Processor: proc, Backplane: bp, Metrics: m, Logger: log,
 		Issuer: cfg.JWTIssuer, Audience: cfg.JWTAudience,
-		TokenTTL: cfg.TokenTTL, RefreshTTL: cfg.RefreshTTL, Grace: cfg.GracePeriod,
-		AdminKey: cfg.AdminKey,
+		TokenTTL: cfg.TokenTTL, RefreshTTL: cfg.RefreshTTL, PairingTokenTTL: cfg.PairingTokenTTL,
+		Grace: cfg.GracePeriod, AdminKey: cfg.AdminKey,
+		RelayURL: cfg.RelayURL, AuthURL: cfg.PublicURL,
 	})
 
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{

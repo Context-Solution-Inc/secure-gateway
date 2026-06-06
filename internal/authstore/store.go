@@ -85,13 +85,13 @@ type Account struct {
 // price/product metadata (PRD §6.1). GraceUntil, when non-zero, is the instant a
 // past_due subscription stops being honored (PRD §6.3).
 type Subscription struct {
-	ID                 string
-	AccountID          string
-	Status             SubStatus
-	MaxPairs           int
-	CurrentPeriodEnd   time.Time
-	GraceUntil         time.Time
-	UpdatedAt          time.Time
+	ID               string
+	AccountID        string
+	Status           SubStatus
+	MaxPairs         int
+	CurrentPeriodEnd time.Time
+	GraceUntil       time.Time
+	UpdatedAt        time.Time
 }
 
 // License is a durable, account-scoped entitlement slot bound to a subscription
@@ -145,6 +145,28 @@ func (r RefreshToken) Active(now time.Time) bool {
 	return r.RevokedAt.IsZero() && now.Before(r.ExpiresAt)
 }
 
+// PairingToken is the one-time, short-lived credential the desktop embeds in the
+// QR code (FR-2.1). The mobile presents it to complete pairing. Like
+// RefreshToken, ID is a hash of the secret; the secret itself is never stored.
+// The token is bound at issue time to the desktop's account/license/device so
+// the mobile cannot forge that binding. ResultPairID is filled on completion so
+// the desktop's poll learns the new pair_id.
+type PairingToken struct {
+	ID              string // hash of the secret presented by clients
+	AccountID       string
+	LicenseID       string
+	DesktopDeviceID string
+	ExpiresAt       time.Time
+	ConsumedAt      time.Time // zero => pending
+	ResultPairID    string
+}
+
+// Active reports whether the pairing token is currently usable at now (not yet
+// consumed and not expired).
+func (t PairingToken) Active(now time.Time) bool {
+	return t.ConsumedAt.IsZero() && now.Before(t.ExpiresAt)
+}
+
 // WebhookEvent records a received Stripe event for idempotent, durable
 // processing with dead-lettering (PRD §6.4).
 type WebhookEvent struct {
@@ -187,6 +209,9 @@ type Store interface {
 	ListActivePairingsByLicense(ctx context.Context, licenseID string) ([]Pairing, error)
 	ListActivePairingsByAccount(ctx context.Context, accountID string) ([]Pairing, error)
 	SetPairingStatus(ctx context.Context, pairID string, status PairingStatus) error
+	// UpdatePairingDevices replaces the device entries on an existing pairing,
+	// keeping its pair_id, for re-pairing (FR-2.4).
+	UpdatePairingDevices(ctx context.Context, pairID, mobileDeviceID, desktopDeviceID string) error
 	// ActivePairCount counts active pairings against a license, for the
 	// capacity check (pairs in use < max_pairs, FR-2.2).
 	ActivePairCount(ctx context.Context, licenseID string) (int, error)
@@ -195,6 +220,14 @@ type Store interface {
 	PutRefreshToken(ctx context.Context, r RefreshToken) error
 	GetRefreshToken(ctx context.Context, id string) (RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
+
+	// Pairing tokens (one-time QR credential, FR-2.1).
+	CreatePairingToken(ctx context.Context, t PairingToken) error
+	GetPairingToken(ctx context.Context, id string) (PairingToken, error)
+	// ConsumePairingToken marks a token consumed and records the resulting
+	// pair_id. It returns ErrConflict if the token was already consumed, so
+	// completion is atomic and single-use under concurrent requests.
+	ConsumePairingToken(ctx context.Context, id, resultPairID string, consumedAt time.Time) error
 
 	// Webhook events (idempotency + dead-letter).
 	// InsertWebhookEventIfAbsent returns inserted=false if the event id was
