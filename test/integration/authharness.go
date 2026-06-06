@@ -3,6 +3,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/lley154/secure-gateway/internal/billing"
 	"github.com/lley154/secure-gateway/internal/billing/fake"
 	"github.com/lley154/secure-gateway/internal/config"
+	"github.com/lley154/secure-gateway/internal/e2ee"
 	"github.com/lley154/secure-gateway/internal/logging"
 	"github.com/lley154/secure-gateway/internal/metrics"
 	"github.com/lley154/secure-gateway/internal/relay/hub"
@@ -46,9 +48,9 @@ type authHarness struct {
 	proc    *billing.Processor
 	authSrv *httptest.Server
 
-	hub     *hub.Hub
+	hub      *hub.Hub
 	relaySrv *httptest.Server
-	wsURL   string
+	wsURL    string
 }
 
 func newAuthHarness(t *testing.T) *authHarness {
@@ -71,9 +73,10 @@ func newAuthHarness(t *testing.T) *authHarness {
 	})
 
 	svc := authservice.NewService(authservice.Deps{
-		Store: store, Signer: sgn, Processor: proc, Metrics: authmetrics.New(), Logger: log,
+		Store: store, Signer: sgn, Processor: proc, Backplane: bp, Metrics: authmetrics.New(), Logger: log,
 		Issuer: testIssuer, Audience: testAud, TokenTTL: 10 * time.Minute, RefreshTTL: 720 * time.Hour,
 		Grace: 168 * time.Hour, AdminKey: testAdminKey,
+		RelayURL: "wss://relay.test/v1/connect", AuthURL: "https://auth.test",
 	})
 	authSrv, err := authservice.NewServer(svc, authservice.ServerConfig{ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", ShutdownDrain: time.Second})
 	if err != nil {
@@ -163,19 +166,47 @@ func (a *authHarness) registerDevice(t *testing.T, secret, role string) string {
 	return r.DeviceID
 }
 
-func (a *authHarness) createPairing(t *testing.T, secret, licenseID, mobileID, desktopID string) string {
+// qrPair runs the full M3 QR pairing flow: the desktop issues a one-time pairing
+// token (account-authed), then the mobile redeems it (token-authed) presenting
+// its X25519 public key. It returns the pair_id plus both keypairs so callers can
+// build E2EE sessions over the resulting pair.
+func (a *authHarness) qrPair(t *testing.T, secret, licenseID, mobileID, desktopID string) (string, e2ee.KeyPair, e2ee.KeyPair) {
 	t.Helper()
-	status, body := a.do(t, http.MethodPost, "/v1/pairings", secret, map[string]string{
-		"license_id": licenseID, "mobile_device_id": mobileID, "desktop_device_id": desktopID,
+	mobileKP, err := e2ee.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopKP, err := e2ee.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Desktop issues a pairing token, supplying its public key for the QR.
+	status, body := a.do(t, http.MethodPost, "/v1/pairing-tokens", secret, map[string]string{
+		"license_id": licenseID, "desktop_device_id": desktopID,
+		"desktop_public_key": base64.StdEncoding.EncodeToString(desktopKP.Public[:]),
 	})
 	if status != http.StatusOK {
-		t.Fatalf("createPairing: status %d body %s", status, body)
+		t.Fatalf("pairing-tokens: status %d body %s", status, body)
 	}
-	var r struct {
+	var issued struct {
+		PairingToken string `json:"pairing_token"`
+	}
+	mustUnmarshal(t, body, &issued)
+
+	// 2. Mobile completes pairing with the token + its public key (no bearer).
+	status, body = a.do(t, http.MethodPost, "/v1/pairings", "", map[string]string{
+		"pairing_token": issued.PairingToken, "mobile_device_id": mobileID,
+		"mobile_public_key": base64.StdEncoding.EncodeToString(mobileKP.Public[:]),
+	})
+	if status != http.StatusOK {
+		t.Fatalf("complete pairing: status %d body %s", status, body)
+	}
+	var done struct {
 		PairID string `json:"pair_id"`
 	}
-	mustUnmarshal(t, body, &r)
-	return r.PairID
+	mustUnmarshal(t, body, &done)
+	return done.PairID, mobileKP, desktopKP
 }
 
 type tokenResult struct {

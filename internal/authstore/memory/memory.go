@@ -16,14 +16,15 @@ import (
 type Store struct {
 	mu sync.RWMutex
 
-	accounts        map[string]authstore.Account
-	customerToAcct  map[string]string // stripe customer id -> account id
-	subscriptions   map[string]authstore.Subscription
-	licenses        map[string]authstore.License
-	devices         map[string]authstore.Device
-	pairings        map[string]authstore.Pairing
-	refreshTokens   map[string]authstore.RefreshToken
-	webhookEvents   map[string]authstore.WebhookEvent
+	accounts       map[string]authstore.Account
+	customerToAcct map[string]string // stripe customer id -> account id
+	subscriptions  map[string]authstore.Subscription
+	licenses       map[string]authstore.License
+	devices        map[string]authstore.Device
+	pairings       map[string]authstore.Pairing
+	refreshTokens  map[string]authstore.RefreshToken
+	pairingTokens  map[string]authstore.PairingToken
+	webhookEvents  map[string]authstore.WebhookEvent
 }
 
 // New returns an empty in-memory store.
@@ -36,6 +37,7 @@ func New() *Store {
 		devices:        map[string]authstore.Device{},
 		pairings:       map[string]authstore.Pairing{},
 		refreshTokens:  map[string]authstore.RefreshToken{},
+		pairingTokens:  map[string]authstore.PairingToken{},
 		webhookEvents:  map[string]authstore.WebhookEvent{},
 	}
 }
@@ -266,6 +268,19 @@ func (s *Store) SetPairingStatus(_ context.Context, pairID string, status authst
 	return nil
 }
 
+func (s *Store) UpdatePairingDevices(_ context.Context, pairID, mobileDeviceID, desktopDeviceID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.pairings[pairID]
+	if !ok {
+		return authstore.ErrNotFound
+	}
+	p.MobileDeviceID = mobileDeviceID
+	p.DesktopDeviceID = desktopDeviceID
+	s.pairings[pairID] = p
+	return nil
+}
+
 func (s *Store) ActivePairCount(_ context.Context, licenseID string) (int, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -308,6 +323,44 @@ func (s *Store) RevokeRefreshToken(_ context.Context, id string) error {
 		r.RevokedAt = time.Now()
 		s.refreshTokens[id] = r
 	}
+	return nil
+}
+
+// --- Pairing tokens ---
+
+func (s *Store) CreatePairingToken(_ context.Context, t authstore.PairingToken) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.pairingTokens[t.ID]; ok {
+		return authstore.ErrConflict
+	}
+	s.pairingTokens[t.ID] = t
+	return nil
+}
+
+func (s *Store) GetPairingToken(_ context.Context, id string) (authstore.PairingToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	t, ok := s.pairingTokens[id]
+	if !ok {
+		return authstore.PairingToken{}, authstore.ErrNotFound
+	}
+	return t, nil
+}
+
+func (s *Store) ConsumePairingToken(_ context.Context, id, resultPairID string, consumedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.pairingTokens[id]
+	if !ok {
+		return authstore.ErrNotFound
+	}
+	if !t.ConsumedAt.IsZero() {
+		return authstore.ErrConflict // already consumed (single-use)
+	}
+	t.ConsumedAt = consumedAt
+	t.ResultPairID = resultPairID
+	s.pairingTokens[id] = t
 	return nil
 }
 
@@ -358,4 +411,4 @@ func (s *Store) ListWebhookEventsByStatus(_ context.Context, status authstore.We
 // --- Operational ---
 
 func (s *Store) HealthCheck(_ context.Context) error { return nil }
-func (s *Store) Close() error                         { return nil }
+func (s *Store) Close() error                        { return nil }

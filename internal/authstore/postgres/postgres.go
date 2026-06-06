@@ -326,6 +326,18 @@ func (s *Store) SetPairingStatus(ctx context.Context, pairID string, status auth
 	return nil
 }
 
+func (s *Store) UpdatePairingDevices(ctx context.Context, pairID, mobileDeviceID, desktopDeviceID string) error {
+	tag, err := s.pool.Exec(ctx, `UPDATE pairings SET mobile_device_id=$2, desktop_device_id=$3 WHERE pair_id=$1`,
+		pairID, mobileDeviceID, desktopDeviceID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return authstore.ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) ActivePairCount(ctx context.Context, licenseID string) (int, error) {
 	var n int
 	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM pairings WHERE license_id=$1 AND status=$2`, licenseID, string(authstore.PairingActive)).Scan(&n)
@@ -365,6 +377,45 @@ func (s *Store) RevokeRefreshToken(ctx context.Context, id string) error {
 		if err := s.pool.QueryRow(ctx, `SELECT true FROM refresh_tokens WHERE id=$1`, id).Scan(&exists); err != nil {
 			return mapErr(err)
 		}
+	}
+	return nil
+}
+
+// --- Pairing tokens ---
+
+func (s *Store) CreatePairingToken(ctx context.Context, t authstore.PairingToken) error {
+	const q = `INSERT INTO pairing_tokens (id, account_id, license_id, desktop_device_id, expires_at, consumed_at, result_pair_id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`
+	_, err := s.pool.Exec(ctx, q, t.ID, t.AccountID, t.LicenseID, t.DesktopDeviceID, t.ExpiresAt, nilIfZero(t.ConsumedAt), t.ResultPairID)
+	return mapErr(err)
+}
+
+func (s *Store) GetPairingToken(ctx context.Context, id string) (authstore.PairingToken, error) {
+	const q = `SELECT id, account_id, license_id, desktop_device_id, expires_at, consumed_at, result_pair_id FROM pairing_tokens WHERE id=$1`
+	var t authstore.PairingToken
+	var consumed *time.Time
+	if err := s.pool.QueryRow(ctx, q, id).Scan(&t.ID, &t.AccountID, &t.LicenseID, &t.DesktopDeviceID, &t.ExpiresAt, &consumed, &t.ResultPairID); err != nil {
+		return authstore.PairingToken{}, mapErr(err)
+	}
+	t.ConsumedAt = deref(consumed)
+	return t, nil
+}
+
+func (s *Store) ConsumePairingToken(ctx context.Context, id, resultPairID string, consumedAt time.Time) error {
+	// Atomic single-use: only the row that is still pending is updated.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE pairing_tokens SET consumed_at=$2, result_pair_id=$3 WHERE id=$1 AND consumed_at IS NULL`,
+		id, consumedAt, resultPairID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Distinguish missing (ErrNotFound) from already-consumed (ErrConflict).
+		var exists bool
+		if err := s.pool.QueryRow(ctx, `SELECT true FROM pairing_tokens WHERE id=$1`, id).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		return authstore.ErrConflict
 	}
 	return nil
 }

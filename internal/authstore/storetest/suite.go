@@ -23,6 +23,7 @@ func Run(t *testing.T, newStore func(t *testing.T) authstore.Store) {
 	t.Run("Devices", func(t *testing.T) { testDevices(t, newStore(t)) })
 	t.Run("Pairings", func(t *testing.T) { testPairings(t, newStore(t)) })
 	t.Run("RefreshTokens", func(t *testing.T) { testRefreshTokens(t, newStore(t)) })
+	t.Run("PairingTokens", func(t *testing.T) { testPairingTokens(t, newStore(t)) })
 	t.Run("WebhookEvents", func(t *testing.T) { testWebhookEvents(t, newStore(t)) })
 }
 
@@ -154,6 +155,17 @@ func testPairings(t *testing.T, s authstore.Store) {
 	if len(byLic) != 1 || len(byAcct) != 1 {
 		t.Fatalf("list active: lic=%d acct=%d", len(byLic), len(byAcct))
 	}
+	// Re-pairing replaces the device entry in place, keeping pair_id (FR-2.4).
+	if err := s.UpdatePairingDevices(ctx, "pair_1", "dev_m2", "dev_d2"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetPairing(ctx, "pair_1")
+	if got.MobileDeviceID != "dev_m2" || got.DesktopDeviceID != "dev_d2" {
+		t.Fatalf("UpdatePairingDevices: %+v", got)
+	}
+	if err := s.UpdatePairingDevices(ctx, "missing", "a", "b"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("UpdatePairingDevices missing: want ErrNotFound, got %v", err)
+	}
 	if err := s.SetPairingStatus(ctx, "pair_1", authstore.PairingRevoked); err != nil {
 		t.Fatal(err)
 	}
@@ -187,6 +199,52 @@ func testRefreshTokens(t *testing.T, s authstore.Store) {
 	}
 	if _, err := s.GetRefreshToken(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
 		t.Fatalf("GetRefreshToken missing: want ErrNotFound, got %v", err)
+	}
+}
+
+func testPairingTokens(t *testing.T, s authstore.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	tok := authstore.PairingToken{
+		ID: "pt_hash_1", AccountID: "acct_1", LicenseID: "lic_1", DesktopDeviceID: "dev_d",
+		ExpiresAt: now.Add(5 * time.Minute),
+	}
+	if err := s.CreatePairingToken(ctx, tok); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreatePairingToken(ctx, tok); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("duplicate CreatePairingToken: want ErrConflict, got %v", err)
+	}
+	got, err := s.GetPairingToken(ctx, "pt_hash_1")
+	if err != nil || !got.Active(now) || got.LicenseID != "lic_1" || got.DesktopDeviceID != "dev_d" {
+		t.Fatalf("GetPairingToken: %+v err=%v active=%v", got, err, got.Active(now))
+	}
+	// Consume sets the result pair id and flips Active to false.
+	if err := s.ConsumePairingToken(ctx, "pt_hash_1", "pair_99", now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetPairingToken(ctx, "pt_hash_1")
+	if got.Active(now) || got.ResultPairID != "pair_99" {
+		t.Fatalf("after consume: %+v active=%v", got, got.Active(now))
+	}
+	// Second consume must fail (single-use).
+	if err := s.ConsumePairingToken(ctx, "pt_hash_1", "pair_other", now); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("double consume: want ErrConflict, got %v", err)
+	}
+	if err := s.ConsumePairingToken(ctx, "missing", "p", now); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("consume missing: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.GetPairingToken(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("GetPairingToken missing: want ErrNotFound, got %v", err)
+	}
+	// An expired token reports inactive.
+	exp := authstore.PairingToken{ID: "pt_hash_2", AccountID: "acct_1", LicenseID: "lic_1", DesktopDeviceID: "dev_d", ExpiresAt: now.Add(-time.Minute)}
+	if err := s.CreatePairingToken(ctx, exp); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetPairingToken(ctx, "pt_hash_2")
+	if got.Active(now) {
+		t.Fatalf("expired token reports active: %+v", got)
 	}
 }
 
