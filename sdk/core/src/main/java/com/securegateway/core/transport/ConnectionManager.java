@@ -340,8 +340,11 @@ public final class ConnectionManager {
 
     private void writeData(PendingSend ps) {
         try {
-            byte[] frame = handshake.sealFrame(ps.id, now(), ps.plaintext);
-            sendFrame(Protocol.msg(ps.id, now(), frame));
+            // The AEAD binds (id, ts) as associated data, so the ts used to seal MUST equal
+            // the ts on the envelope the peer opens with — compute it once.
+            long ts = now();
+            byte[] frame = handshake.sealFrame(ps.id, ts, ps.plaintext);
+            sendFrame(Protocol.msg(ps.id, ts, frame));
         } catch (RuntimeException e) {
             CompletableFuture<Void> f = pendingAcks.remove(ps.id);
             if (f != null) {
