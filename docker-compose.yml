@@ -1,0 +1,56 @@
+# Local multi-instance-capable relay + Redis backplane.
+#
+# Before `docker compose up`, generate a dev keypair the relay verifies tokens
+# against (the Auth & License Service serves this in production):
+#
+#   go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
+#
+# Then mint tokens for clients with:
+#   go run ./cmd/devtoken -key ./keys/relay.key.json -role mobile  -pair p1 ...
+#   go run ./cmd/devtoken -key ./keys/relay.key.json -role desktop -pair p1 ...
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  relay:
+    build:
+      context: .
+      args:
+        VERSION: dev
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8443:8443"
+    environment:
+      RELAY_LISTEN_ADDR: ":8443"
+      RELAY_JWT_ISSUER: "https://auth.example.com"
+      RELAY_JWT_AUDIENCE: "relay"
+      RELAY_JWT_PUBLIC_KEY_FILE: "/keys/relay.pub.pem"
+      RELAY_BACKPLANE: "redis"
+      RELAY_REDIS_ADDR: "redis:6379"
+      RELAY_LOG_FORMAT: "json"
+      # No TLS cert set: the relay serves plain HTTP, intended to sit behind a
+      # TLS-terminating proxy. For direct wss, mount certs and set
+      # RELAY_TLS_CERT_FILE / RELAY_TLS_KEY_FILE.
+    volumes:
+      - ./keys:/keys:ro
+    # Container hardening (PRD §9.2).
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576

@@ -1,0 +1,9 @@
+.git
+.github
+*.md
+keys/
+test/
+**/*_test.go
+Dockerfile
+docker-compose.yml
+Makefile
