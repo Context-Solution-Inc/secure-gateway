@@ -1,0 +1,23 @@
+# No-Stripe manual-test override (DEV/LOCAL ONLY).
+#
+# Switches the auth service to the in-memory store and seeds a deterministic
+# active license, matching the constants the `:java:manualE2E` driver expects
+# (admin key / account / license). Layer it on top of the base compose:
+#
+#   docker compose -f docker-compose.yml -f deploy/compose/docker-compose.dev-seed.yml up --build
+#
+# then, from sdk/:
+#
+#   ./gradlew :java:manualE2E
+#
+# AUTH_DEV_SEED bypasses Stripe and works ONLY with AUTH_STORE=memory — never use
+# it in production. Postgres still starts (unused) because the base compose lists
+# it as a dependency; that's harmless.
+services:
+  auth:
+    environment:
+      AUTH_STORE: "memory"
+      AUTH_ADMIN_KEY: "admin-e2e-key"
+      AUTH_DEV_SEED: "acct_e2e,lic_e2e,sub_e2e"
+      AUTH_RELAY_URL: "ws://127.0.0.1:8443/v1/connect"
+      AUTH_PUBLIC_URL: "http://127.0.0.1:8080"

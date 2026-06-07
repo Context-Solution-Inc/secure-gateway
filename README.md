@@ -494,10 +494,32 @@ sleep 18 && curl -s localhost:8443/metrics | grep relay_backplane_up   # -> 0
 docker compose start redis
 ```
 
-To drive a **full token → connect → encrypted send** flow locally (no Redis/Stripe,
-in-memory stores, dev license seed), use the SDK driver and hand-run binaries in
-[Manual end-to-end verification](#manual-end-to-end-verification) above. Tear down
-with `docker compose down -v`.
+#### Drive the full SDK flow against the stack (no Stripe)
+
+A real token → pair → connect → encrypted-send flow needs an **account** and a
+valid **license**. Without Stripe there is no license, so layer the dev-seed
+override: it switches auth to the in-memory store and seeds a deterministic active
+license matching the constants the `:java:manualE2E` driver expects (admin key
+`admin-e2e-key`, account `acct_e2e`, license `lic_e2e`).
+
+```sh
+docker compose -f docker-compose.yml \
+               -f deploy/compose/docker-compose.dev-seed.yml up --build
+# then, from sdk/:
+./gradlew :java:manualE2E
+```
+
+It creates the account, pairs the Kotlin (mobile) and Java (desktop) SDKs, and
+exchanges an encrypted message each way. (Without the override you'll get
+`403 forbidden` on account creation — the base compose uses a different admin key
+and the Postgres store, where `AUTH_DEV_SEED` is disabled.) Alternatively, hand-run
+the binaries per [Manual end-to-end verification](#manual-end-to-end-verification).
+Tear down with `docker compose down -v`.
+
+> **No Stripe but want the Postgres store?** Licenses are otherwise minted only by
+> signed Stripe webhooks. Either send a signed test webhook to
+> `POST /v1/webhooks/stripe` (PRD §6.4), or insert a `subscription` + `license`
+> row directly — the dev-seed override above is the simpler path for local testing.
 
 ### Production (VPS)
 
