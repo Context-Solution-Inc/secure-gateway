@@ -103,6 +103,12 @@ func run() error {
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{
 		ListenAddr: cfg.ListenAddr, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
 		TLSMinVersion: cfg.TLSMinVersion, ShutdownDrain: cfg.ShutdownDrain,
+		TrustProxy:             cfg.TrustProxy,
+		RateLimitEnabled:       cfg.RateLimitEnabled,
+		RateLimitIPPerMin:      cfg.RateLimitIPPerMin,
+		RateLimitIPBurst:       cfg.RateLimitIPBurst,
+		RateLimitAccountPerMin: cfg.RateLimitAccountPerMin,
+		RateLimitAccountBurst:  cfg.RateLimitAccountBurst,
 	})
 	if err != nil {
 		return err

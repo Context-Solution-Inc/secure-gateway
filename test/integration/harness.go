@@ -60,6 +60,12 @@ func newHarness(t *testing.T, bp backplane.Backplane, logOut io.Writer) *harness
 // newHarnessOpts is newHarness with explicit session options (e.g. fast
 // heartbeats for liveness tests).
 func newHarnessOpts(t *testing.T, bp backplane.Backplane, logOut io.Writer, sessOpts session.Options) *harness {
+	return newHarnessFull(t, bp, logOut, sessOpts, nil)
+}
+
+// newHarnessFull is newHarnessOpts with an optional config mutator, letting a
+// test enable features (e.g. rate limiting) before the server is built.
+func newHarnessFull(t *testing.T, bp backplane.Backplane, logOut io.Writer, sessOpts session.Options, mutate func(*config.Config)) *harness {
 	t.Helper()
 
 	signer, err := devtoken.NewSigner("ES256", "test-kid")
@@ -109,6 +115,9 @@ func newHarnessOpts(t *testing.T, bp backplane.Backplane, logOut io.Writer, sess
 	cfg := &config.Config{
 		ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", Backplane: config.BackplaneMemory,
 		ShutdownDrain: 5 * time.Second,
+	}
+	if mutate != nil {
+		mutate(cfg)
 	}
 	srv, err := server.New(cfg, log, m, server.Deps{
 		Verifier:       verifier,

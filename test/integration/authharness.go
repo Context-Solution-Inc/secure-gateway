@@ -53,7 +53,7 @@ type authHarness struct {
 	wsURL    string
 }
 
-func newAuthHarness(t *testing.T) *authHarness {
+func newAuthHarness(t *testing.T, serverOpts ...func(*authservice.ServerConfig)) *authHarness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -78,7 +78,11 @@ func newAuthHarness(t *testing.T) *authHarness {
 		Grace: 168 * time.Hour, AdminKey: testAdminKey,
 		RelayURL: "wss://relay.test/v1/connect", AuthURL: "https://auth.test",
 	})
-	authSrv, err := authservice.NewServer(svc, authservice.ServerConfig{ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", ShutdownDrain: time.Second})
+	srvCfg := authservice.ServerConfig{ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", ShutdownDrain: time.Second}
+	for _, opt := range serverOpts {
+		opt(&srvCfg)
+	}
+	authSrv, err := authservice.NewServer(svc, srvCfg)
 	if err != nil {
 		t.Fatal(err)
 	}

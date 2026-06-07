@@ -25,6 +25,17 @@ type Set struct {
 	LicensesProvisioned prometheus.Counter
 	// ReconcileRuns: nightly reconciliation runs, by outcome (ok|error).
 	ReconcileRuns *prometheus.CounterVec
+	// RateLimited: requests rejected by the rate limiter, by kind (ip|account).
+	RateLimited *prometheus.CounterVec
+	// BackplaneUp: 1 when the revocation backplane is reachable, else 0.
+	BackplaneUp prometheus.Gauge
+	// WebhooksPending/WebhooksDead: durable webhook queue depth by terminal state.
+	WebhooksPending prometheus.Gauge
+	WebhooksDead    prometheus.Gauge
+	// WebhookOldestPendingSeconds: age of the oldest unprocessed webhook (lag).
+	WebhookOldestPendingSeconds prometheus.Gauge
+	// TLSCertExpiry: seconds until the serving cert expires (0 if proxy-terminated).
+	TLSCertExpiry prometheus.Gauge
 }
 
 // New constructs and registers all auth metrics on a fresh registry.
@@ -64,10 +75,36 @@ func New() *Set {
 			Name: "auth_reconcile_runs_total",
 			Help: "Reconciliation runs, by outcome.",
 		}, []string{"outcome"}),
+		RateLimited: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "auth_rate_limited_total",
+			Help: "Requests rejected by the rate limiter, by kind (ip|account).",
+		}, []string{"kind"}),
+		BackplaneUp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "auth_backplane_up",
+			Help: "1 when the revocation backplane is reachable, else 0.",
+		}),
+		WebhooksPending: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "auth_webhooks_pending",
+			Help: "Durable webhook events awaiting (re)processing.",
+		}),
+		WebhooksDead: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "auth_webhooks_dead",
+			Help: "Webhook events dead-lettered after exhausting retries.",
+		}),
+		WebhookOldestPendingSeconds: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "auth_webhook_oldest_pending_seconds",
+			Help: "Age of the oldest unprocessed webhook event (processing lag).",
+		}),
+		TLSCertExpiry: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "auth_tls_cert_expiry_seconds",
+			Help: "Seconds until the serving TLS certificate expires (0 if proxy-terminated).",
+		}),
 	}
 	reg.MustRegister(
 		s.TokensIssued, s.TokenRequestsRejected, s.WebhooksReceived, s.WebhooksRejected,
 		s.WebhookProcessingFailures, s.RevocationsPublished, s.LicensesProvisioned, s.ReconcileRuns,
+		s.RateLimited, s.BackplaneUp, s.WebhooksPending, s.WebhooksDead,
+		s.WebhookOldestPendingSeconds, s.TLSCertExpiry,
 	)
 	return s
 }

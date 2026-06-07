@@ -57,6 +57,14 @@ type Config struct {
 	RedisPassword string        // RELAY_REDIS_PASSWORD
 	RedisDB       int           // RELAY_REDIS_DB
 
+	// Rate limiting & abuse controls (PRD §10.2). In-process, per-instance.
+	RateLimitEnabled     bool          // RELAY_RATELIMIT_ENABLED (default true)
+	RateLimitIPPerMin    int           // RELAY_RATELIMIT_IP_PER_MIN: per-IP connect attempts/min
+	RateLimitIPBurst     int           // RELAY_RATELIMIT_IP_BURST: per-IP burst allowance
+	AbuseStrikeThreshold int           // RELAY_ABUSE_STRIKE_THRESHOLD: 4005 strikes before a ban (0 disables)
+	AbuseStrikeWindow    time.Duration // RELAY_ABUSE_STRIKE_WINDOW: window strikes accumulate in
+	AbuseBanWindow       time.Duration // RELAY_ABUSE_BAN_WINDOW: how long a banned IP stays banned
+
 	// Lifecycle
 	ShutdownDrain time.Duration // RELAY_SHUTDOWN_DRAIN
 
@@ -101,6 +109,7 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 
 	c.JWTAlgs = strList(getenv, "RELAY_JWT_ALGS", []string{"ES256", "EdDSA"})
 	c.TrustProxy = boolean(getenv, "RELAY_TRUST_PROXY", false, &errs)
+	c.RateLimitEnabled = boolean(getenv, "RELAY_RATELIMIT_ENABLED", true, &errs)
 
 	var err error
 	if c.JWTLeeway, err = duration(getenv, "RELAY_JWT_LEEWAY", 30*time.Second); err != nil {
@@ -125,6 +134,21 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 		collect(err)
 	}
 	if c.ShutdownDrain, err = duration(getenv, "RELAY_SHUTDOWN_DRAIN", 30*time.Second); err != nil {
+		collect(err)
+	}
+	if c.RateLimitIPPerMin, err = integer(getenv, "RELAY_RATELIMIT_IP_PER_MIN", 120); err != nil {
+		collect(err)
+	}
+	if c.RateLimitIPBurst, err = integer(getenv, "RELAY_RATELIMIT_IP_BURST", 60); err != nil {
+		collect(err)
+	}
+	if c.AbuseStrikeThreshold, err = integer(getenv, "RELAY_ABUSE_STRIKE_THRESHOLD", 10); err != nil {
+		collect(err)
+	}
+	if c.AbuseStrikeWindow, err = duration(getenv, "RELAY_ABUSE_STRIKE_WINDOW", time.Minute); err != nil {
+		collect(err)
+	}
+	if c.AbuseBanWindow, err = duration(getenv, "RELAY_ABUSE_BAN_WINDOW", 15*time.Minute); err != nil {
 		collect(err)
 	}
 
@@ -191,6 +215,12 @@ func (c *Config) validate() error {
 	// loses its slot to TTL expiry between renewals.
 	if c.SlotTTL <= 2*c.PingInterval {
 		errs = append(errs, fmt.Errorf("RELAY_SLOT_TTL (%s) must exceed 2x RELAY_PING_INTERVAL (%s)", c.SlotTTL, c.PingInterval))
+	}
+
+	if c.RateLimitEnabled {
+		if c.RateLimitIPPerMin <= 0 || c.RateLimitIPBurst <= 0 {
+			errs = append(errs, errors.New("RELAY_RATELIMIT_IP_PER_MIN and RELAY_RATELIMIT_IP_BURST must be positive when RELAY_RATELIMIT_ENABLED=true"))
+		}
 	}
 
 	switch c.LogLevel {
