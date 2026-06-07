@@ -18,6 +18,12 @@ spec:
       targetPort: 8443
   # Long-lived WebSocket sessions: keep clients pinned for the connection.
   sessionAffinity: ClientIP
+  # Preserve the real client source IP at the socket so per-IP rate limiting keys
+  # on the actual client (paired with RELAY_TRUST_PROXY=false). Without this an
+  # L4 LB hides the client behind the LB/node IP. If you instead front the relay
+  # with an L7 ingress that sets X-Forwarded-For, drop this and set
+  # RELAY_TRUST_PROXY=true.
+  externalTrafficPolicy: Local
 ---
 # Auth is cluster-internal (the relay reaches its JWKS; clients reach it via the
 # edge/ingress for login/pairing). ClusterIP by default.

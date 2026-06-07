@@ -2,7 +2,6 @@ package server
 
 import (
 	"encoding/json"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,6 +9,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/lley154/secure-gateway/internal/httpsec"
 	"github.com/lley154/secure-gateway/internal/logging"
 	"github.com/lley154/secure-gateway/internal/relay/session"
 	"github.com/lley154/secure-gateway/internal/token"
@@ -26,7 +26,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Abuse controls run before any token work and before the upgrade (FR-1.3,
 	// PRD §10.2). A banned or rate-limited IP gets HTTP 429 + Retry-After.
-	ip := clientIP(r, s.cfg.TrustProxy)
+	var ip string
+	if s.bans != nil || s.ipLimiter != nil {
+		ip = httpsec.ClientIP(r, s.cfg.TrustProxy)
+	}
 	if s.bans != nil {
 		if banned, retry := s.bans.Banned(ip); banned {
 			s.metrics.RateLimited.WithLabelValues("ban").Inc()
@@ -110,25 +113,6 @@ func (s *Server) reject429(w http.ResponseWriter, retry time.Duration) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusTooManyRequests)
 	_ = json.NewEncoder(w).Encode(map[string]string{"reason": "rate_limited"})
-}
-
-// clientIP resolves the client's IP for rate limiting. When trustProxy is set it
-// honors the first hop of X-Forwarded-For (set by a trusted fronting proxy);
-// otherwise it uses the socket's remote address. The port is always stripped.
-func clientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			first := strings.TrimSpace(strings.Split(xff, ",")[0])
-			if first != "" {
-				return first
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
 
 // bearerToken extracts the token from the Authorization header. Tokens in the

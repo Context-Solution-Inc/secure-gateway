@@ -90,17 +90,8 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) tlsConfig() (*tls.Config, error) {
-	if s.cfg.TLSCertFile == "" {
-		return nil, nil // TLS terminated by a fronting proxy.
-	}
-	min := uint16(tls.VersionTLS12)
-	if s.cfg.TLSMinVersion == "1.3" {
-		min = tls.VersionTLS13
-	}
-	return &tls.Config{
-		MinVersion:   min,
-		CipherSuites: httpsec.ModernCipherSuites(), // explicit modern allow-list (TLS 1.2 leg)
-	}, nil
+	// nil when no cert is set (TLS terminated by a fronting proxy).
+	return httpsec.ServerTLSConfig(s.cfg.TLSCertFile, s.cfg.TLSMinVersion), nil
 }
 
 // sweepLimiters periodically reclaims idle rate-limiter entries and refreshes

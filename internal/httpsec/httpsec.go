@@ -5,7 +5,9 @@ package httpsec
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
+	"strings"
 )
 
 // ModernCipherSuites is the explicit TLS 1.2 cipher allow-list: ECDHE key
@@ -36,4 +38,42 @@ func HSTS(next http.Handler) http.Handler {
 		w.Header().Set("Strict-Transport-Security", hstsValue)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ServerTLSConfig builds the deliberate server TLS config: the modern cipher
+// allow-list (TLS 1.2 leg) and the configured minimum version. It returns nil
+// when certFile is empty (TLS terminated by a fronting proxy). minVersion is
+// "1.2" (default) or "1.3".
+func ServerTLSConfig(certFile, minVersion string) *tls.Config {
+	if certFile == "" {
+		return nil
+	}
+	min := uint16(tls.VersionTLS12)
+	if minVersion == "1.3" {
+		min = tls.VersionTLS13
+	}
+	return &tls.Config{
+		MinVersion:   min,
+		CipherSuites: ModernCipherSuites(),
+	}
+}
+
+// ClientIP resolves the client's IP for keying (e.g. rate limiting). When
+// trustProxy is set it uses the first hop of X-Forwarded-For — set trustProxy
+// ONLY behind a proxy that REPLACES X-Forwarded-For with the immediate client IP
+// (or strips inbound copies); otherwise a client can spoof the header. When
+// trustProxy is false it uses the socket peer address. The port is stripped.
+func ClientIP(r *http.Request, trustProxy bool) string {
+	if trustProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+				return first
+			}
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }

@@ -14,7 +14,12 @@ data:
   RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"
   RELAY_BACKPLANE: "redis"
   RELAY_REDIS_ADDR: "redis:6379"
-  RELAY_TRUST_PROXY: "true" # behind an L4/L7 LB that sets X-Forwarded-For
+  # Client-IP source for rate limiting. Default false = use the socket peer IP,
+  # which is correct with the LoadBalancer Service's externalTrafficPolicy: Local
+  # (preserves the client source IP). Set to "true" ONLY when fronted by an L7
+  # proxy/ingress that REPLACES X-Forwarded-For with the client IP — otherwise an
+  # L4 LB collapses every client to one IP and rate limiting mass-429s the fleet.
+  RELAY_TRUST_PROXY: "false"
   RELAY_LOG_FORMAT: "json"
   # Rate limiting (PRD §10.2) — tune per environment.
   RELAY_RATELIMIT_ENABLED: "true"
@@ -38,7 +43,10 @@ data:
   AUTH_STORE: "postgres"
   AUTH_BACKPLANE: "redis"
   AUTH_REDIS_ADDR: "redis:6379"
-  AUTH_TRUST_PROXY: "true"
+  # See RELAY_TRUST_PROXY note. Set "true" only behind an L7 proxy that replaces
+  # X-Forwarded-For with the client IP; the auth service is typically reached via
+  # the same ingress as the public API.
+  AUTH_TRUST_PROXY: "false"
   AUTH_LOG_FORMAT: "json"
   AUTH_RATELIMIT_ENABLED: "true"
   AUTH_RATELIMIT_IP_PER_MIN: "60"

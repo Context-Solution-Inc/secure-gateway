@@ -73,17 +73,8 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) tlsConfig() (*tls.Config, error) {
-	if s.cfg.TLSCertFile == "" {
-		return nil, nil // TLS terminated by a fronting proxy.
-	}
-	min := uint16(tls.VersionTLS12)
-	if s.cfg.TLSMinVersion == "1.3" {
-		min = tls.VersionTLS13
-	}
-	return &tls.Config{
-		MinVersion:   min,
-		CipherSuites: httpsec.ModernCipherSuites(), // explicit modern allow-list (TLS 1.2 leg)
-	}, nil
+	// nil when no cert is set (TLS terminated by a fronting proxy).
+	return httpsec.ServerTLSConfig(s.cfg.TLSCertFile, s.cfg.TLSMinVersion), nil
 }
 
 // Run serves until ctx is canceled, then shuts down gracefully.

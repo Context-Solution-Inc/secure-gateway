@@ -2,11 +2,11 @@ package authservice
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/lley154/secure-gateway/internal/httpsec"
 	"github.com/lley154/secure-gateway/internal/ratelimit"
 )
 
@@ -54,7 +54,7 @@ func (s *Server) limit(next http.HandlerFunc) http.HandlerFunc {
 	rl := s.rl
 	return func(w http.ResponseWriter, r *http.Request) {
 		if rl.ip != nil {
-			ip := clientIP(r, rl.trustProxy)
+			ip := httpsec.ClientIP(r, rl.trustProxy)
 			if !rl.ip.Allow(ip) {
 				s.tooManyRequests(w, "ip")
 				return
@@ -78,6 +78,11 @@ func (s *Server) tooManyRequests(w http.ResponseWriter, kind string) {
 
 // accountFromBearer extracts the account id encoded as the prefix of the bearer
 // secret (account_id.<rand>), or "" when there is no account bearer.
+//
+// This keys the per-account limiter only; it is NOT authenticated here (the
+// handler re-verifies the bearer against the stored hash). So per-account
+// limiting is best-effort: a caller can present an arbitrary account prefix.
+// Per-IP limiting is the primary control. See docs/threat-model.md §4.
 func accountFromBearer(r *http.Request) string {
 	secret := bearer(r)
 	if secret == "" {
@@ -88,21 +93,4 @@ func accountFromBearer(r *http.Request) string {
 		return ""
 	}
 	return acct
-}
-
-// clientIP resolves the client's IP. With trustProxy it honors the first hop of
-// X-Forwarded-For (from a trusted fronting proxy); otherwise the socket address.
-func clientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-				return first
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
 }
