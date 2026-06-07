@@ -67,6 +67,10 @@ services:
       AUTH_ADMIN_KEY: "dev_admin_key"
       AUTH_LOG_FORMAT: "json"
     volumes:
+      # The container runs as the distroless nonroot user (uid 65532), so the
+      # mounted signing key must be readable by it. `make keys` writes it 0600
+      # owned by your host user; for this dev key run:
+      #   chmod 0755 keys && chmod 0644 keys/relay.key.json
       - ./keys:/keys:ro
     read_only: true
     cap_drop:

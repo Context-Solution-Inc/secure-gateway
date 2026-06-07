@@ -95,6 +95,10 @@ services:
       AUTH_TRUST_PROXY: "true"
       AUTH_LOG_FORMAT: "json"
     volumes:
+      # Mounted signing key must be readable by the container's uid 65532
+      # (distroless nonroot). Keep it private — chown to that uid rather than
+      # world-reading it:
+      #   sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
       - ./keys:/keys:ro
     read_only: true
     cap_drop: [ALL]

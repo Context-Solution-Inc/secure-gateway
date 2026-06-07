@@ -457,8 +457,15 @@ dry-run.
 
 ```sh
 make keys                 # ./keys/relay.key.json (the auth signing key, mounted ro)
+# The auth container runs as the distroless nonroot user (uid 65532), so the
+# bind-mounted key must be readable by it. For this throwaway dev key:
+chmod 0755 keys && chmod 0644 keys/relay.key.json
 docker compose up --build # redis, postgres, auth (:8080), relay (:8443)
 ```
+
+> **`permission denied` on `/keys/relay.key.json`?** `make keys` writes the key
+> `0600` owned by your host user, but the container runs as uid 65532 — run the
+> `chmod` above (dev), or `chown` it to the container uid (prod, see below).
 
 Verify the stack (in another terminal):
 
@@ -526,6 +533,10 @@ cp .env.example .env          # set RELAY_HOST/AUTH_HOST/ACME_EMAIL/JWT_ISSUER a
                               # real POSTGRES_PASSWORD, REDIS_PASSWORD, Stripe secrets, admin key
 mkdir -p keys
 go run ../../cmd/devtoken -gen-keys -out-dir ./keys -alg ES256   # writes keys/relay.key.json
+
+# The auth container runs as uid 65532 (distroless nonroot). Give that uid read
+# access WITHOUT making the signing key world-readable:
+sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
 ```
 
 `.env` and `keys/` are gitignored — keep them on the host only. Back up
