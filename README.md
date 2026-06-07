@@ -6,7 +6,7 @@ ends dial *out* to the relay over `wss://`; the relay pairs them and forwards
 **end-to-end-encrypted** frames it cannot read. See
 [`prd-secure-mobile-desktop-relay.md`](./prd-secure-mobile-desktop-relay.md).
 
-## Status: M1 — Relay core, M2 — Auth & licensing
+## Status: M1 — Relay core, M2 — Auth & licensing, M3 — Pairing & E2EE, M4 — Client SDKs
 
 **M1**, the Go relay server:
 
@@ -38,8 +38,27 @@ ends dial *out* to the relay over `wss://`; the relay pairs them and forwards
   a `/.well-known/jwks.json` endpoint the relay verifies against, and the same
   distroless/static/non-root container hardening as the relay.
 
-Client SDKs (M4) and the QR pairing + X25519/HKDF/XChaCha20 E2EE (M3) are not yet
-implemented. `cmd/devtoken` still mints tokens for relay-only dev/tests.
+**M3**, QR pairing and end-to-end encryption:
+
+- Versioned QR pairing flow (FR-2): the desktop requests a one-time pairing token
+  and renders a QR (`{v, pairing_token, desktop_pubkey, desktop_device_id,
+  endpoints}`); the mobile scans it and completes pairing over HTTPS, exchanging
+  X25519 public keys. New endpoints: `POST /v1/pairing-tokens`,
+  `POST /v1/pairing-tokens/poll`, `POST /v1/pairings/unpair`.
+- The `internal/e2ee` reference crypto (FR-5): X25519 ECDH → HKDF-SHA256
+  directional keys → **XChaCha20-Poly1305** (24-byte nonce), with the envelope
+  `id`/`ts` bound as AEAD associated data. The committed interop vectors
+  (`internal/e2ee/testdata/vectors.json`) are the cross-platform contract; the
+  relay still only ever sees ciphertext.
+
+**M4**, the client SDKs (`sdk/`) — Android (Kotlin), desktop (Java), iOS (Swift) —
+with one common API (`connect`, `send(bytes)->ack`, `onMessage`, `onStateChange`,
+`pair(qr)` / `generatePairingQr()`). Each implements FR-1 reconnect/heartbeat, FR-3
+token refresh, and FR-5 crypto internally, so host apps deal only in plaintext
+messages and connection state. All three reproduce `vectors.json` byte-for-byte; a
+cross-platform E2E (Kotlin mobile ↔ Java desktop) runs against the real relay +
+auth binaries. See [`sdk/README.md`](./sdk/README.md). `cmd/devtoken` still mints
+tokens for relay-only dev/tests.
 
 ## Layout
 
@@ -68,7 +87,13 @@ internal/authstore/storetest shared store conformance suite
 internal/license            entitlement rules (§6.3) + license-key generation
 internal/billing            Stripe webhook verify/dispatch, reconcile, revocation
 internal/billing/fake       hermetic Stripe test double (API + signed webhooks)
-internal/authservice        HTTP handlers, token issue/refresh, JWKS, account auth
+internal/authservice        HTTP handlers, token/pairing issue/refresh, JWKS, account auth
+internal/e2ee               reference E2EE (X25519/HKDF/XChaCha20) + interop vectors (M3)
+-- Client SDKs (M4) --
+sdk/core         shared JVM contract logic (crypto, protocol, pairing/token client, state machine)
+sdk/java         desktop SDK (java.net.http.WebSocket) + cross-platform e2eTest
+sdk/android      mobile SDK in Kotlin/OkHttp (built as a JVM lib here)
+sdk/ios          iOS SDK in Swift (URLSessionWebSocketTask) — source-only on Linux
 test/testclient  reusable Go relay client
 test/integration end-to-end tests (echo, lifecycle, slots, revocation, drain,
                  observability, cross-instance over Redis, auth subscription
@@ -155,7 +180,10 @@ HTTP/JSON API (TLS in prod, or plain HTTP behind a proxy):
 | `POST /v1/webhooks/stripe` | Stripe signature | Ingest subscription events (idempotent, durable) |
 | `POST /v1/accounts` | admin key | Provision an account credential (seam for the account backend) |
 | `POST /v1/devices` | account secret | Register a mobile/desktop device |
-| `POST /v1/pairings` | account secret | Create a pairing (license capacity checked) → `pair_id` |
+| `POST /v1/pairing-tokens` | account secret | Desktop: mint a one-time pairing token + QR payload (M3) |
+| `POST /v1/pairing-tokens/poll` | account secret | Desktop: learn `pair_id` + mobile pubkey once paired (M3) |
+| `POST /v1/pairings` | pairing token | Mobile: complete pairing with its X25519 pubkey → `pair_id` (M3) |
+| `POST /v1/pairings/unpair` | account secret | Revoke a pairing and free the license slot (M3) |
 | `POST /v1/token` | account secret | Issue a connection JWT + refresh token (valid licenses only) |
 | `POST /v1/token/refresh` | refresh token | Rotate; re-checks license validity |
 | `GET /.well-known/jwks.json` | — | Public keys the relay verifies against |
@@ -223,6 +251,125 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 | `AUTH_SHUTDOWN_DRAIN` | `30s` | graceful shutdown budget |
 | `AUTH_LOG_LEVEL` / `AUTH_LOG_FORMAT` | `info` / `json` | logging |
 | `AUTH_INSTANCE_ID` | auto | overrideable instance identity |
+
+## Client SDKs (M4)
+
+Thin Relay Client SDKs live under [`sdk/`](./sdk) (a Gradle 8.7 / JDK 17 multi-module
+build plus a Swift package). `sdk/core` holds all contract logic once — FR-5 crypto,
+the wire protocol codec, the pairing/token HTTP client, the per-session handshake, and
+the reconnect/state machine — and the per-platform modules add transport, key storage,
+and an idiomatic facade. See [`sdk/README.md`](./sdk/README.md) for details and
+[`sdk/ios/vectors-spec.md`](./sdk/ios/vectors-spec.md) for the E2EE interop contract.
+
+Build and test (from `sdk/`):
+
+```sh
+./gradlew build                                  # compile all modules + unit tests
+./gradlew :core:test :java:test :android:test    # incl. vectors conformance (Java + Kotlin)
+./gradlew :java:e2eTest                           # cross-platform E2E vs the real relay + auth
+```
+
+`:java:e2eTest` is the **M4 exit criterion**: it builds and boots the real `cmd/relay` +
+`cmd/auth` binaries (memory backplane/store, no Redis/Stripe), generates an ES256 key
+with `cmd/devtoken`, seeds a license via `AUTH_DEV_SEED`, and runs the full **Kotlin
+mobile ↔ Java desktop** flow — pair (QR) → token → `wss` connect → handshake →
+bidirectional encrypted send/ack — asserting the relay only ever sees ciphertext. It
+uses the project's Go toolchain at `~/.local/go-sdk/go/bin/go` (override the repo root
+with `-Dsdk.repoRoot=...` if needed).
+
+> `AUTH_DEV_SEED="<account>,<license>,<subscription>"` is a **dev-only** seam on
+> `cmd/auth` (memory store only) that provisions a deterministic active license, since
+> licenses are otherwise minted only via signed Stripe webhooks with no read-back path.
+
+The Android module is built as a plain Kotlin/JVM library so it compiles, unit-tests, and
+runs the E2E on Linux (no Android SDK required here); a real Android build re-targets it
+with `com.android.library` + `lazysodium-android`. The iOS Swift package needs Xcode —
+run its vectors-conformance test on macOS with `cd sdk/ios && swift test` (see
+[`sdk/ios/README.md`](./sdk/ios/README.md)).
+
+### Manual end-to-end verification
+
+Drive the whole stack by hand — relay + auth + both SDKs — with no Redis or Stripe. This
+uses the in-memory stores and the dev license seed; all commands run from the repo root
+unless noted. You'll use **three terminals**.
+
+**1. Build the binaries and a signing key** (one time):
+
+```sh
+export PATH="$PATH:$HOME/.local/go-sdk/go/bin"
+make build          # bin/relay, bin/auth, bin/devtoken
+make keys           # ./keys/relay.{key.json,pub.pem,jwks.json}
+```
+
+**2. Terminal 1 — start the auth service** (seeds a deterministic account license):
+
+```sh
+AUTH_LISTEN_ADDR=127.0.0.1:8080 \
+AUTH_STORE=memory AUTH_BACKPLANE=memory \
+AUTH_JWT_ISSUER=https://auth.example.com \
+AUTH_JWT_SIGNING_KEY_FILE=./keys/relay.key.json \
+AUTH_STRIPE_WEBHOOK_SECRET=whsec_dev \
+AUTH_ADMIN_KEY=admin-e2e-key \
+AUTH_DEV_SEED=acct_e2e,lic_e2e,sub_e2e \
+AUTH_RELAY_URL=ws://127.0.0.1:8443/v1/connect \
+AUTH_PUBLIC_URL=http://127.0.0.1:8080 \
+  ./bin/auth
+```
+
+The log line `DEV SEED active — provisioned test license` confirms the seed. The
+`AUTH_ADMIN_KEY`, `AUTH_DEV_SEED` account, and `AUTH_RELAY_URL` here must match the values
+the driver expects (they do, by default).
+
+**3. Terminal 2 — start the relay** (verifies tokens via the auth JWKS):
+
+```sh
+RELAY_LISTEN_ADDR=127.0.0.1:8443 \
+RELAY_BACKPLANE=memory \
+RELAY_JWT_ISSUER=https://auth.example.com \
+RELAY_JWKS_URL=http://127.0.0.1:8080/.well-known/jwks.json \
+RELAY_JWT_ALGS=ES256 \
+  ./bin/relay
+```
+
+Both `RELAY_JWT_ISSUER` and `AUTH_JWT_ISSUER` must match. Sanity-check health:
+
+```sh
+curl -fsS http://127.0.0.1:8080/healthz && echo      # auth -> {"status":"ok"}
+curl -fsS http://127.0.0.1:8443/healthz && echo      # relay -> ok
+```
+
+**4. Terminal 3 — run the SDK driver** (Kotlin mobile ↔ Java desktop, through the live relay):
+
+```sh
+cd sdk
+./gradlew :java:manualE2E            # add -DauthUrl=… -DwsUrl=… to override the defaults
+```
+
+It creates the account, generates the pairing QR, pairs, connects both ends, and exchanges
+one encrypted message each way. Expected output:
+
+```
+[manual-e2e] desktop QR payload: {"v":1,"pairing_token":"pt_…","desktop_pubkey":"…",…}
+[manual-e2e] paired: pair_id = pair_…
+[manual-e2e] both ends connected
+[manual-e2e] desktop received: "hello desktop, from the mobile SDK"
+[manual-e2e] mobile received:  "reply from the desktop SDK"
+[manual-e2e] OK — bidirectional encrypted exchange succeeded (the relay only saw ciphertext)
+```
+
+**5. Confirm the relay never saw plaintext** — the relay's own log must contain only
+ciphertext and routing metadata (FR-5.4). With the relay log captured to a file, e.g.
+`./bin/relay … | tee /tmp/relay.log`:
+
+```sh
+grep -c "hello desktop, from the mobile" /tmp/relay.log    # -> 0
+```
+
+To inspect the auth/pairing HTTP contract by hand instead, the same flow is exposed over
+JSON (`POST /v1/accounts` → `/v1/devices` → `/v1/pairing-tokens` → `/v1/pairings` →
+`/v1/token`); the QR payload returned by `/v1/pairing-tokens` is what step 4 carries. (Driving
+the *encrypted* exchange by hand isn't practical — the SDK driver above does the X25519/HKDF/
+XChaCha20 handshake for you.) Press Ctrl-C in terminals 1 and 2 to stop.
 
 ## Close codes (Appendix B)
 

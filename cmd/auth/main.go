@@ -11,10 +11,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,6 +64,10 @@ func run() error {
 		return err
 	}
 	defer store.Close()
+
+	if err := seedDevData(ctx, store, cfg, log); err != nil {
+		return err
+	}
 
 	bp, err := buildBackplane(cfg)
 	if err != nil {
@@ -147,6 +153,43 @@ func runWorkers(ctx context.Context, proc *billing.Processor, api billing.Stripe
 			}
 		}
 	}
+}
+
+// seedDevData provisions a deterministic account license for local/dev and the M4 SDK
+// cross-platform E2E. There is no admin HTTP path to mint a license (licenses come only
+// from signed Stripe webhooks), and no endpoint to read a license_id back, so the SDK E2E
+// needs known credentials. AUTH_DEV_SEED="<account_id>,<license_id>,<subscription_id>"
+// seeds an active subscription (max_pairs=1) and license directly into the store. The
+// account itself is created at test time via the admin POST /v1/accounts (which sets the
+// secret). This is dev-only and refuses to run against a non-memory store.
+func seedDevData(ctx context.Context, store authstore.Store, cfg *authconfig.Config, log *slog.Logger) error {
+	spec := os.Getenv("AUTH_DEV_SEED")
+	if spec == "" {
+		return nil
+	}
+	if cfg.Store != authconfig.StoreMemory {
+		return errors.New("AUTH_DEV_SEED is only allowed with AUTH_STORE=memory")
+	}
+	parts := strings.Split(spec, ",")
+	if len(parts) != 3 {
+		return errors.New("AUTH_DEV_SEED must be account_id,license_id,subscription_id")
+	}
+	acct, lic, sub := parts[0], parts[1], parts[2]
+	now := time.Now()
+	if err := store.UpsertSubscription(ctx, authstore.Subscription{
+		ID: sub, AccountID: acct, Status: authstore.SubActive, MaxPairs: 1,
+		CurrentPeriodEnd: now.Add(365 * 24 * time.Hour), UpdatedAt: now,
+	}); err != nil {
+		return fmt.Errorf("seed subscription: %w", err)
+	}
+	if err := store.CreateLicense(ctx, authstore.License{
+		ID: lic, AccountID: acct, SubscriptionID: sub, Status: authstore.LicenseActive, CreatedAt: now,
+	}); err != nil && !errors.Is(err, authstore.ErrConflict) {
+		return fmt.Errorf("seed license: %w", err)
+	}
+	log.Warn("DEV SEED active — provisioned test license (memory store only)",
+		"account", acct, "license", lic, "subscription", sub)
+	return nil
 }
 
 func buildStore(ctx context.Context, cfg *authconfig.Config) (authstore.Store, error) {
