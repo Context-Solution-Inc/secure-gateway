@@ -466,6 +466,11 @@ docker compose up --build # redis, postgres, auth (:8080), relay (:8443)
 > **`permission denied` on `/keys/relay.key.json`?** `make keys` writes the key
 > `0600` owned by your host user, but the container runs as uid 65532 — run the
 > `chmod` above (dev), or `chown` it to the container uid (prod, see below).
+>
+> **Redis `Memory overcommit must be enabled` warning?** Harmless here — our Redis
+> runs with persistence disabled, so it never forks for a background save. It is a
+> host kernel setting (`vm.overcommit_memory`) that cannot be set per-container; to
+> silence it run `sudo sysctl vm.overcommit_memory=1` on the host.
 
 Verify the stack (in another terminal):
 
@@ -518,6 +523,7 @@ net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
+vm.overcommit_memory = 1   # silences the Redis startup warning (host-level only)
 EOF
 sudo sysctl --system
 ```

@@ -63,6 +63,13 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 
 # Connection tracking table (only if a stateful firewall/conntrack is in path).
 net.netfilter.nf_conntrack_max = 1048576
+
+# Redis prints a startup WARNING without this; it lets a background save /
+# replication fork succeed under memory pressure. It is a global (non-namespaced)
+# kernel param, so it CANNOT be set per-container — it must live here on the host.
+# (Our co-located Redis runs with persistence disabled, so this is best-practice
+# rather than strictly required, but it silences the warning and is safe.)
+vm.overcommit_memory = 1
 ```
 
 Apply with:
