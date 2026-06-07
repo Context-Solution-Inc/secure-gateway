@@ -14,7 +14,11 @@ LDFLAGS     := -s -w \
 SOAK_CONNS    ?= 1000
 SOAK_DURATION ?= 5s
 
-.PHONY: all build relay auth devtoken test race vet fmt lint soak docker docker-auth keys clean
+# Full-scale capacity overrides, e.g.: make bench LAT_FRAMES=20000 STORM_CONNS=20000
+LAT_FRAMES  ?=
+STORM_CONNS ?=
+
+.PHONY: all build relay auth devtoken test race vet fmt lint soak bench docker docker-auth keys clean
 
 all: vet test build
 
@@ -45,6 +49,12 @@ fmt:
 soak:
 	SOAK_CONNS=$(SOAK_CONNS) SOAK_DURATION=$(SOAK_DURATION) \
 	  go test -tags soak -run TestSoak -timeout 25h -v ./test/soak/
+
+# Build-tagged capacity checks (§10.1): forward latency, token-verify, revocation
+# propagation, reconnect storm. CI-sized by default; override LAT_FRAMES/STORM_CONNS.
+bench:
+	LAT_FRAMES=$(LAT_FRAMES) STORM_CONNS=$(STORM_CONNS) \
+	  go test -tags bench -run . -bench BenchmarkTokenVerify -benchmem -timeout 10m -v ./test/bench/
 
 docker:
 	docker build \
