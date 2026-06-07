@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/lley154/secure-gateway/internal/config"
 	"github.com/lley154/secure-gateway/internal/token"
 )
@@ -46,6 +48,9 @@ func TestRateLimitPerIPRejectsBeforeUpgrade(t *testing.T) {
 	}
 	if ra := resp.Header.Get("Retry-After"); ra == "" {
 		t.Fatal("429 response missing Retry-After header")
+	}
+	if got := testutil.ToFloat64(h.metrics.RateLimited.WithLabelValues("ip")); got < 1 {
+		t.Errorf("relay_rate_limited_total{kind=ip} = %v, want >= 1", got)
 	}
 }
 
@@ -98,6 +103,12 @@ func TestAbuseBanAfterProtocolStrikes(t *testing.T) {
 	}
 	if resp.Header.Get("Retry-After") == "" {
 		t.Fatal("ban 429 missing Retry-After header")
+	}
+	if got := testutil.ToFloat64(h.metrics.RateLimited.WithLabelValues("ban")); got < 1 {
+		t.Errorf("relay_rate_limited_total{kind=ban} = %v, want >= 1", got)
+	}
+	if got := testutil.ToFloat64(h.metrics.BansActive); got < 1 {
+		t.Errorf("relay_bans_active = %v, want >= 1", got)
 	}
 }
 

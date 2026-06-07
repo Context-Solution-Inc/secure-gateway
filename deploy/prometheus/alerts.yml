@@ -1,0 +1,110 @@
+# Prometheus alerting rules for the Secure Device Relay (PRD §9.3).
+#
+# Validate locally with:  promtool check rules deploy/prometheus/alerts.yml
+#
+# These cover the §9.3 alert signals: auth-failure spike, connection saturation
+# vs fd limit, backplane (Redis) unavailability, webhook processing lag, and TLS
+# certificate expiry. Thresholds are starting points — tune per environment.
+groups:
+  - name: relay
+    rules:
+      - alert: RelayAuthFailureSpike
+        expr: sum(rate(relay_auth_failures_total[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated relay auth failures"
+          description: "Relay auth failures >5/s for 10m (possible credential stuffing or misconfigured clients). Check relay_auth_failures_total by reason."
+
+      - alert: RelayConnectionSaturation
+        expr: (relay_fd_used / relay_fd_limit) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay file descriptors >80% of limit"
+          description: "relay_fd_used/relay_fd_limit > 0.8 on {{ $labels.instance }}. Connection capacity is nearing the nofile limit; scale out or raise ulimit."
+
+      - alert: RelayConnectionSaturationCritical
+        expr: (relay_fd_used / relay_fd_limit) > 0.95
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay file descriptors >95% of limit"
+          description: "relay_fd_used/relay_fd_limit > 0.95 on {{ $labels.instance }}. New connections will start failing imminently."
+
+      - alert: RelayBackplaneDown
+        expr: relay_backplane_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Relay backplane (Redis) unreachable"
+          description: "relay_backplane_up == 0 on {{ $labels.instance }}. New slot claims fail closed (connections refused with 503/try-again) per PRD §10.3."
+
+      - alert: RelayReconnectStorm
+        expr: sum(rate(relay_connects_total[1m])) > 500
+        for: 2m
+        labels:
+          severity: info
+        annotations:
+          summary: "Reconnect storm in progress"
+          description: "Relay accepting >500 connects/s for 2m. Expected during a deploy/drain; investigate if sustained."
+
+      - alert: RelayTLSCertExpiringSoon
+        expr: relay_tls_cert_expiry_seconds > 0 and relay_tls_cert_expiry_seconds < 604800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Relay TLS certificate expires in <7 days"
+          description: "relay_tls_cert_expiry_seconds < 7d on {{ $labels.instance }}. Rotate the serving certificate."
+
+  - name: auth
+    rules:
+      - alert: AuthBackplaneDown
+        expr: auth_backplane_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auth backplane (Redis) unreachable"
+          description: "auth_backplane_up == 0. Revocation events cannot be published; immediate cutoff (FR-3.6) is degraded."
+
+      - alert: AuthWebhookLag
+        expr: auth_webhook_oldest_pending_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Stripe webhook processing lag >5m"
+          description: "Oldest unprocessed webhook is >5m old. License state may be stale until reconciliation; check auth_webhooks_pending and the retry worker."
+
+      - alert: AuthWebhookDeadLetter
+        expr: auth_webhooks_dead > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead-lettered Stripe webhooks present"
+          description: "auth_webhooks_dead > 0: events exhausted retries. Nightly reconciliation should heal, but investigate the failures."
+
+      - alert: AuthTokenRejectionSpike
+        expr: sum(rate(auth_token_requests_rejected_total[5m])) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Elevated auth token rejections"
+          description: "Token issue/refresh rejections >5/s for 10m. Check auth_token_requests_rejected_total by reason (license_invalid, pairing_invalid, ...)."
+
+      - alert: AuthTLSCertExpiringSoon
+        expr: auth_tls_cert_expiry_seconds > 0 and auth_tls_cert_expiry_seconds < 604800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Auth TLS certificate expires in <7 days"
+          description: "auth_tls_cert_expiry_seconds < 7d. Rotate the serving certificate."

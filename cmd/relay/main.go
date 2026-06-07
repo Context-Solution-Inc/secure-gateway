@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/lley154/secure-gateway/internal/backplane"
 	"github.com/lley154/secure-gateway/internal/backplane/memory"
@@ -20,6 +21,7 @@ import (
 	"github.com/lley154/secure-gateway/internal/config"
 	"github.com/lley154/secure-gateway/internal/logging"
 	"github.com/lley154/secure-gateway/internal/metrics"
+	"github.com/lley154/secure-gateway/internal/obs"
 	"github.com/lley154/secure-gateway/internal/relay/hub"
 	"github.com/lley154/secure-gateway/internal/relay/server"
 	"github.com/lley154/secure-gateway/internal/relay/session"
@@ -87,12 +89,50 @@ func run() error {
 		return err
 	}
 
+	// Background telemetry: fd saturation, backplane health, and TLS cert expiry
+	// (PRD §9.3). Runs for the instance lifetime.
+	go runRelayCollectors(ctx, m, bp, cfg.TLSCertFile)
+
 	if err := srv.Run(ctx); err != nil {
 		return err
 	}
 	<-hubDone
 	log.Info("relay stopped cleanly")
 	return nil
+}
+
+// runRelayCollectors samples host/backplane telemetry into Prometheus gauges on
+// a ticker until ctx is canceled.
+func runRelayCollectors(ctx context.Context, m *metrics.Set, bp backplane.Backplane, tlsCertFile string) {
+	const interval = 15 * time.Second
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	sample := func() {
+		used, limit := obs.FDUsage()
+		m.FDUsed.Set(used)
+		m.FDLimit.Set(limit)
+
+		hctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		up := 0.0
+		if bp.HealthCheck(hctx) == nil {
+			up = 1
+		}
+		cancel()
+		m.BackplaneUp.Set(up)
+
+		if secs, ok := obs.CertExpirySeconds(tlsCertFile, time.Now()); ok {
+			m.TLSCertExpiry.Set(secs)
+		}
+	}
+	sample() // populate immediately so /metrics is meaningful before the first tick
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sample()
+		}
+	}
 }
 
 func buildVerifier(cfg *config.Config) (token.Verifier, error) {
