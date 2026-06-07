@@ -287,6 +287,90 @@ with `com.android.library` + `lazysodium-android`. The iOS Swift package needs X
 run its vectors-conformance test on macOS with `cd sdk/ios && swift test` (see
 [`sdk/ios/README.md`](./sdk/ios/README.md)).
 
+### Manual end-to-end verification
+
+Drive the whole stack by hand — relay + auth + both SDKs — with no Redis or Stripe. This
+uses the in-memory stores and the dev license seed; all commands run from the repo root
+unless noted. You'll use **three terminals**.
+
+**1. Build the binaries and a signing key** (one time):
+
+```sh
+export PATH="$PATH:$HOME/.local/go-sdk/go/bin"
+make build          # bin/relay, bin/auth, bin/devtoken
+make keys           # ./keys/relay.{key.json,pub.pem,jwks.json}
+```
+
+**2. Terminal 1 — start the auth service** (seeds a deterministic account license):
+
+```sh
+AUTH_LISTEN_ADDR=127.0.0.1:8080 \
+AUTH_STORE=memory AUTH_BACKPLANE=memory \
+AUTH_JWT_ISSUER=https://auth.example.com \
+AUTH_JWT_SIGNING_KEY_FILE=./keys/relay.key.json \
+AUTH_STRIPE_WEBHOOK_SECRET=whsec_dev \
+AUTH_ADMIN_KEY=admin-e2e-key \
+AUTH_DEV_SEED=acct_e2e,lic_e2e,sub_e2e \
+AUTH_RELAY_URL=ws://127.0.0.1:8443/v1/connect \
+AUTH_PUBLIC_URL=http://127.0.0.1:8080 \
+  ./bin/auth
+```
+
+The log line `DEV SEED active — provisioned test license` confirms the seed. The
+`AUTH_ADMIN_KEY`, `AUTH_DEV_SEED` account, and `AUTH_RELAY_URL` here must match the values
+the driver expects (they do, by default).
+
+**3. Terminal 2 — start the relay** (verifies tokens via the auth JWKS):
+
+```sh
+RELAY_LISTEN_ADDR=127.0.0.1:8443 \
+RELAY_BACKPLANE=memory \
+RELAY_JWT_ISSUER=https://auth.example.com \
+RELAY_JWKS_URL=http://127.0.0.1:8080/.well-known/jwks.json \
+RELAY_JWT_ALGS=ES256 \
+  ./bin/relay
+```
+
+Both `RELAY_JWT_ISSUER` and `AUTH_JWT_ISSUER` must match. Sanity-check health:
+
+```sh
+curl -fsS http://127.0.0.1:8080/healthz && echo      # auth -> {"status":"ok"}
+curl -fsS http://127.0.0.1:8443/healthz && echo      # relay -> ok
+```
+
+**4. Terminal 3 — run the SDK driver** (Kotlin mobile ↔ Java desktop, through the live relay):
+
+```sh
+cd sdk
+./gradlew :java:manualE2E            # add -DauthUrl=… -DwsUrl=… to override the defaults
+```
+
+It creates the account, generates the pairing QR, pairs, connects both ends, and exchanges
+one encrypted message each way. Expected output:
+
+```
+[manual-e2e] desktop QR payload: {"v":1,"pairing_token":"pt_…","desktop_pubkey":"…",…}
+[manual-e2e] paired: pair_id = pair_…
+[manual-e2e] both ends connected
+[manual-e2e] desktop received: "hello desktop, from the mobile SDK"
+[manual-e2e] mobile received:  "reply from the desktop SDK"
+[manual-e2e] OK — bidirectional encrypted exchange succeeded (the relay only saw ciphertext)
+```
+
+**5. Confirm the relay never saw plaintext** — the relay's own log must contain only
+ciphertext and routing metadata (FR-5.4). With the relay log captured to a file, e.g.
+`./bin/relay … | tee /tmp/relay.log`:
+
+```sh
+grep -c "hello desktop, from the mobile" /tmp/relay.log    # -> 0
+```
+
+To inspect the auth/pairing HTTP contract by hand instead, the same flow is exposed over
+JSON (`POST /v1/accounts` → `/v1/devices` → `/v1/pairing-tokens` → `/v1/pairings` →
+`/v1/token`); the QR payload returned by `/v1/pairing-tokens` is what step 4 carries. (Driving
+the *encrypted* exchange by hand isn't practical — the SDK driver above does the X25519/HKDF/
+XChaCha20 handshake for you.) Press Ctrl-C in terminals 1 and 2 to stop.
+
 ## Close codes (Appendix B)
 
 | Code | Meaning | Client behavior |
