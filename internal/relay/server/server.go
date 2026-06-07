@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/lley154/secure-gateway/internal/config"
+	"github.com/lley154/secure-gateway/internal/httpsec"
 	"github.com/lley154/secure-gateway/internal/metrics"
 	"github.com/lley154/secure-gateway/internal/ratelimit"
 	"github.com/lley154/secure-gateway/internal/relay/hub"
@@ -78,7 +79,7 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           mux,
+		Handler:           httpsec.HSTS(mux), // HSTS on the HTTP surface (PRD §10.2)
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -96,7 +97,10 @@ func (s *Server) tlsConfig() (*tls.Config, error) {
 	if s.cfg.TLSMinVersion == "1.3" {
 		min = tls.VersionTLS13
 	}
-	return &tls.Config{MinVersion: min}, nil
+	return &tls.Config{
+		MinVersion:   min,
+		CipherSuites: httpsec.ModernCipherSuites(), // explicit modern allow-list (TLS 1.2 leg)
+	}, nil
 }
 
 // sweepLimiters periodically reclaims idle rate-limiter entries and refreshes
