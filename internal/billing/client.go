@@ -12,15 +12,32 @@ import (
 	"github.com/stripe/stripe-go/v82/client"
 )
 
-// StripeAPI is the narrow outbound Stripe surface the service needs (for the
-// nightly reconciliation job). It is an interface so tests can substitute a fake
-// and run the whole lifecycle hermetically (billing/fake).
+// CheckoutSessionParams is the input to CreateCheckoutSession. The desktop
+// onboarding flow embeds a client-generated nonce in Metadata so the webhook can
+// bind the resulting account/license/subscription back to the waiting desktop.
+type CheckoutSessionParams struct {
+	PriceID    string
+	SuccessURL string
+	CancelURL  string
+	Metadata   map[string]string
+}
+
+// StripeAPI is the narrow outbound Stripe surface the service needs (the nightly
+// reconciliation job and desktop checkout onboarding). It is an interface so
+// tests can substitute a fake and run the whole lifecycle hermetically
+// (billing/fake).
 type StripeAPI interface {
 	// GetSubscription fetches a single subscription with items+prices expanded.
 	GetSubscription(ctx context.Context, id string) (*stripe.Subscription, error)
 	// ListSubscriptions returns all subscriptions (items+prices expanded),
 	// for reconciliation.
 	ListSubscriptions(ctx context.Context) ([]*stripe.Subscription, error)
+	// CreateCheckoutSession creates a subscription-mode Stripe Checkout Session
+	// and returns its hosted URL and session id.
+	CreateCheckoutSession(ctx context.Context, p CheckoutSessionParams) (url, sessionID string, err error)
+	// CreateBillingPortalSession creates a Stripe Customer Portal session for the
+	// given customer and returns its hosted URL (for "Subscription Settings").
+	CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (url string, err error)
 }
 
 // RealAPI is the production StripeAPI backed by stripe-go.
@@ -58,4 +75,38 @@ func (a *RealAPI) ListSubscriptions(ctx context.Context) ([]*stripe.Subscription
 		return nil, err
 	}
 	return out, nil
+}
+
+func (a *RealAPI) CreateCheckoutSession(ctx context.Context, p CheckoutSessionParams) (string, string, error) {
+	params := &stripe.CheckoutSessionParams{
+		Mode:       stripe.String(string(stripe.CheckoutSessionModeSubscription)),
+		SuccessURL: stripe.String(p.SuccessURL),
+		CancelURL:  stripe.String(p.CancelURL),
+		LineItems: []*stripe.CheckoutSessionLineItemParams{{
+			Price:    stripe.String(p.PriceID),
+			Quantity: stripe.Int64(1),
+		}},
+	}
+	params.Context = ctx
+	for k, v := range p.Metadata {
+		params.AddMetadata(k, v)
+	}
+	sess, err := a.sc.CheckoutSessions.New(params)
+	if err != nil {
+		return "", "", err
+	}
+	return sess.URL, sess.ID, nil
+}
+
+func (a *RealAPI) CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (string, error) {
+	params := &stripe.BillingPortalSessionParams{Customer: stripe.String(customerID)}
+	params.Context = ctx
+	if returnURL != "" {
+		params.ReturnURL = stripe.String(returnURL)
+	}
+	sess, err := a.sc.BillingPortalSessions.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
 }

@@ -47,6 +47,15 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 	mux.HandleFunc("GET /.well-known/jwks.json", svc.handleJWKS)
 	mux.HandleFunc("POST /v1/webhooks/stripe", svc.handleWebhook)
 	mux.HandleFunc("POST /v1/accounts", svc.handleCreateAccount)
+	// Desktop subscription onboarding (claim-token flow). start/claim are
+	// unauthenticated (the desktop has no account yet) so they are rate limited;
+	// return is the browser-facing Stripe success_url; subscription is the
+	// account-authenticated launch-time status check.
+	mux.HandleFunc("POST /v1/checkout/start", s.limit(svc.handleStartCheckout))
+	mux.HandleFunc("GET /v1/checkout/return", svc.handleCheckoutReturn)
+	mux.HandleFunc("POST /v1/accounts/claim", s.limit(svc.handleClaimAccount))
+	mux.HandleFunc("GET /v1/subscription", s.limit(svc.handleGetSubscription))
+	mux.HandleFunc("POST /v1/billing-portal", s.limit(svc.handleBillingPortal))
 	mux.HandleFunc("POST /v1/devices", svc.handleRegisterDevice)
 	// Sensitive endpoints (pairing + token issuance/refresh) are rate limited.
 	mux.HandleFunc("POST /v1/pairing-tokens", s.limit(svc.handleCreatePairingToken))

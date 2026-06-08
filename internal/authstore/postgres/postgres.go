@@ -420,6 +420,91 @@ func (s *Store) ConsumePairingToken(ctx context.Context, id, resultPairID string
 	return nil
 }
 
+// --- Checkout claims ---
+
+const claimCols = `nonce, stripe_session_id, redirect_uri, claim_code_hash, account_id, license_id, subscription_id, status, created_at, expires_at, consumed_at`
+
+func scanClaim(row pgx.Row) (authstore.CheckoutClaim, error) {
+	var c authstore.CheckoutClaim
+	var status string
+	var consumed *time.Time
+	if err := row.Scan(&c.Nonce, &c.StripeSessionID, &c.RedirectURI, &c.ClaimCodeHash,
+		&c.AccountID, &c.LicenseID, &c.SubscriptionID, &status, &c.CreatedAt, &c.ExpiresAt, &consumed); err != nil {
+		return authstore.CheckoutClaim{}, mapErr(err)
+	}
+	c.Status = authstore.ClaimStatus(status)
+	c.ConsumedAt = deref(consumed)
+	return c, nil
+}
+
+func (s *Store) CreateCheckoutClaim(ctx context.Context, c authstore.CheckoutClaim) error {
+	const q = `INSERT INTO checkout_claims (` + claimCols + `)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
+	_, err := s.pool.Exec(ctx, q, c.Nonce, c.StripeSessionID, c.RedirectURI, c.ClaimCodeHash,
+		c.AccountID, c.LicenseID, c.SubscriptionID, string(c.Status), c.CreatedAt, c.ExpiresAt, nilIfZero(c.ConsumedAt))
+	return mapErr(err)
+}
+
+func (s *Store) GetCheckoutClaim(ctx context.Context, nonce string) (authstore.CheckoutClaim, error) {
+	return scanClaim(s.pool.QueryRow(ctx, `SELECT `+claimCols+` FROM checkout_claims WHERE nonce=$1`, nonce))
+}
+
+func (s *Store) GetCheckoutClaimByCode(ctx context.Context, claimCodeHash string) (authstore.CheckoutClaim, error) {
+	if claimCodeHash == "" {
+		return authstore.CheckoutClaim{}, authstore.ErrNotFound
+	}
+	return scanClaim(s.pool.QueryRow(ctx, `SELECT `+claimCols+` FROM checkout_claims WHERE claim_code_hash=$1`, claimCodeHash))
+}
+
+func (s *Store) MarkCheckoutClaimReady(ctx context.Context, nonce, accountID, licenseID, subscriptionID, sessionID string) error {
+	// Idempotent under Stripe retries: only a still-pending row is updated; a
+	// second delivery (already ready/consumed) is a no-op rather than an error.
+	_, err := s.pool.Exec(ctx,
+		`UPDATE checkout_claims
+			SET account_id=$2, license_id=$3, subscription_id=$4,
+				stripe_session_id=COALESCE(NULLIF($5,''), stripe_session_id), status='ready'
+		  WHERE nonce=$1 AND status='pending'`,
+		nonce, accountID, licenseID, subscriptionID, sessionID)
+	return mapErr(err)
+}
+
+func (s *Store) SetCheckoutClaimCode(ctx context.Context, nonce, claimCodeHash string) error {
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE checkout_claims SET claim_code_hash=$2 WHERE nonce=$1 AND status='ready'`,
+		nonce, claimCodeHash)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return authstore.ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) ConsumeCheckoutClaim(ctx context.Context, nonce string, consumedAt time.Time) (authstore.CheckoutClaim, error) {
+	// Atomic single-use: only a row still in 'ready' is flipped to 'consumed'.
+	c, err := scanClaim(s.pool.QueryRow(ctx,
+		`UPDATE checkout_claims SET status='consumed', consumed_at=$2
+		  WHERE nonce=$1 AND status='ready'
+		RETURNING `+claimCols, nonce, consumedAt))
+	if errors.Is(err, authstore.ErrNotFound) {
+		// Distinguish already-consumed (ErrConflict) from missing/pending.
+		var status string
+		if e := s.pool.QueryRow(ctx, `SELECT status FROM checkout_claims WHERE nonce=$1`, nonce).Scan(&status); e == nil && status == "consumed" {
+			return authstore.CheckoutClaim{}, authstore.ErrConflict
+		}
+	}
+	return c, err
+}
+
+func (s *Store) DeleteExpiredCheckoutClaims(ctx context.Context, before time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM checkout_claims WHERE expires_at < $1`, before)
+	if err != nil {
+		return 0, mapErr(err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // --- Webhook events ---
 
 func (s *Store) InsertWebhookEventIfAbsent(ctx context.Context, e authstore.WebhookEvent) (bool, error) {

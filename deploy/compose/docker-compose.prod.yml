@@ -88,6 +88,10 @@ services:
       AUTH_REDIS_PASSWORD: "${REDIS_PASSWORD}"
       AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
       AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
+      # Desktop subscription onboarding (claim-token flow). Empty price id ⇒
+      # POST /v1/checkout/start is disabled (503); see deploy/compose/.env.example.
+      AUTH_STRIPE_PRICE_ID: "${AUTH_STRIPE_PRICE_ID:-}"
+      AUTH_CLAIM_TTL: "${AUTH_CLAIM_TTL:-30m}"
       AUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY}"
       AUTH_PUBLIC_URL: "https://${AUTH_HOST}"
       AUTH_RELAY_URL: "wss://${RELAY_HOST}/v1/connect"

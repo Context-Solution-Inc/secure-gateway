@@ -99,6 +99,7 @@ func run() error {
 		TokenTTL: cfg.TokenTTL, RefreshTTL: cfg.RefreshTTL, PairingTokenTTL: cfg.PairingTokenTTL,
 		Grace: cfg.GracePeriod, AdminKey: cfg.AdminKey,
 		RelayURL: cfg.RelayURL, AuthURL: cfg.PublicURL,
+		CheckoutPriceID: cfg.StripePriceID, ClaimTTL: cfg.ClaimTTL,
 	})
 
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{
@@ -183,6 +184,9 @@ func runAuthCollectors(ctx context.Context, m *authmetrics.Set, store authstore.
 		if secs, ok := obs.CertExpirySeconds(tlsCertFile, time.Now()); ok {
 			m.TLSCertExpiry.Set(secs)
 		}
+
+		// GC expired desktop checkout claims (cheap indexed delete).
+		_, _ = store.DeleteExpiredCheckoutClaims(hctx, time.Now())
 	}
 	sample()
 	for {

@@ -51,3 +51,10 @@ data:
   AUTH_RATELIMIT_ENABLED: "true"
   AUTH_RATELIMIT_IP_PER_MIN: "60"
   AUTH_RATELIMIT_ACCOUNT_PER_MIN: "30"
+  # Public base URL — the checkout success_url base + billing-portal return URL.
+  AUTH_PUBLIC_URL: "https://auth.example.com"
+  # Desktop subscription onboarding (claim-token flow). Set AUTH_STRIPE_PRICE_ID
+  # to enable POST /v1/checkout/start (needs the Stripe secret key in the Secret +
+  # the Customer portal enabled in the Stripe dashboard). Empty ⇒ disabled (503).
+  AUTH_STRIPE_PRICE_ID: ""
+  AUTH_CLAIM_TTL: "30m"

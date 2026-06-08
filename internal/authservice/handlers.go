@@ -253,6 +253,9 @@ func (s *Service) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	ev, err := s.proc.Verify(body, r.Header.Get("Stripe-Signature"))
 	if err != nil {
+		// Log the real cause (signature vs. tolerance) — the response stays a
+		// generic bad_signature so we don't leak verification internals.
+		s.log.Warn("webhook signature verification failed", logging.FieldReason, err.Error())
 		s.rejectWebhook(w, http.StatusBadRequest, "bad_signature")
 		return
 	}

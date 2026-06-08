@@ -3,6 +3,7 @@ package billing
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -18,6 +19,10 @@ import (
 
 // maxAttempts caps webhook retry attempts before an event is dead-lettered.
 const maxAttempts = 5
+
+// ErrStripeNotConfigured is returned when an outbound Stripe call is requested
+// but no StripeAPI was wired (e.g. AUTH_STRIPE_SECRET_KEY unset).
+var ErrStripeNotConfigured = errors.New("billing: stripe not configured")
 
 // Clock returns the current time; injectable so tests are deterministic.
 type Clock func() time.Time
@@ -74,7 +79,13 @@ func NewProcessor(c Config) *Processor {
 // Verify checks the Stripe signature on a raw webhook request body and returns
 // the parsed event (PRD §10.2: signature verification is mandatory).
 func (p *Processor) Verify(payload []byte, sigHeader string) (stripe.Event, error) {
-	return webhook.ConstructEvent(payload, sigHeader, p.webhookSecret)
+	// IgnoreAPIVersionMismatch: the relay only reads version-stable fields
+	// (customer/subscription ids, session metadata, subscription status), so a
+	// live account whose API version differs from stripe-go's pinned version must
+	// not be rejected. Without this, ConstructEvent errors on EVERY real event
+	// (the hermetic fake stamps the SDK version, so tests don't catch it).
+	return webhook.ConstructEventWithOptions(payload, sigHeader, p.webhookSecret,
+		webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 }
 
 // Record stores the event for idempotent, durable processing and reports
@@ -155,6 +166,26 @@ func (p *Processor) dispatch(ctx context.Context, ev stripe.Event) error {
 	}
 }
 
+// CreateCheckoutSession creates a subscription-mode Stripe Checkout Session via
+// the outbound API, keeping all stripe-go usage inside this package. Returns
+// ErrStripeNotConfigured when no API is wired.
+func (p *Processor) CreateCheckoutSession(ctx context.Context, in CheckoutSessionParams) (url, sessionID string, err error) {
+	if p.api == nil {
+		return "", "", ErrStripeNotConfigured
+	}
+	return p.api.CreateCheckoutSession(ctx, in)
+}
+
+// CreateBillingPortalSession opens a Stripe Customer Portal session for the
+// customer (the "Subscription Settings" destination). ErrStripeNotConfigured
+// when no API is wired.
+func (p *Processor) CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (string, error) {
+	if p.api == nil {
+		return "", ErrStripeNotConfigured
+	}
+	return p.api.CreateBillingPortalSession(ctx, customerID, returnURL)
+}
+
 // --- Handlers ---
 
 func (p *Processor) handleCheckoutCompleted(ctx context.Context, ev stripe.Event) error {
@@ -185,7 +216,24 @@ func (p *Processor) handleCheckoutCompleted(ctx context.Context, ev stripe.Event
 	if err != nil {
 		return fmt.Errorf("fetch subscription %s: %w", subID, err)
 	}
-	return p.syncSubscription(ctx, sub, accountID)
+	if err := p.syncSubscription(ctx, sub, accountID); err != nil {
+		return err
+	}
+	// Desktop onboarding (claim-token flow): when the Checkout was started by a
+	// desktop it carries a nonce in session metadata. Bind the provisioned
+	// account/license/subscription to the waiting claim so the desktop can fetch
+	// its credential exactly once. Idempotent under Stripe retries; a no-nonce
+	// (Customer-Portal / client_reference_id) purchase skips this entirely.
+	if nonce := cs.Metadata["nonce"]; nonce != "" {
+		licenseID := ""
+		if lics, lerr := p.store.ListLicensesBySubscription(ctx, subID); lerr == nil && len(lics) > 0 {
+			licenseID = lics[0].ID // monthly plan max_pairs=1 => exactly one license
+		}
+		if err := p.store.MarkCheckoutClaimReady(ctx, nonce, accountID, licenseID, subID, cs.ID); err != nil {
+			return fmt.Errorf("bind checkout claim: %w", err)
+		}
+	}
+	return nil
 }
 
 func (p *Processor) handleSubscriptionUpsert(ctx context.Context, ev stripe.Event) error {
