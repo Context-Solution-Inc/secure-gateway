@@ -8,6 +8,20 @@ subprojects {
     repositories {
         mavenCentral()
     }
+
+    // Publish each JVM module to the local Maven repo so the mobile-agent client
+    // (desktop :shared + :androidApp) can consume com.securegateway:{core,java,
+    // android}:<version> via mavenLocal(). Run `./gradlew publishToMavenLocal`.
+    apply(plugin = "maven-publish")
+    afterEvaluate {
+        extensions.configure<PublishingExtension> {
+            publications {
+                create<MavenPublication>("maven") {
+                    from(components["java"])
+                }
+            }
+        }
+    }
 }
 
 allprojects {

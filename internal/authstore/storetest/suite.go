@@ -24,6 +24,7 @@ func Run(t *testing.T, newStore func(t *testing.T) authstore.Store) {
 	t.Run("Pairings", func(t *testing.T) { testPairings(t, newStore(t)) })
 	t.Run("RefreshTokens", func(t *testing.T) { testRefreshTokens(t, newStore(t)) })
 	t.Run("PairingTokens", func(t *testing.T) { testPairingTokens(t, newStore(t)) })
+	t.Run("CheckoutClaims", func(t *testing.T) { testCheckoutClaims(t, newStore(t)) })
 	t.Run("WebhookEvents", func(t *testing.T) { testWebhookEvents(t, newStore(t)) })
 }
 
@@ -245,6 +246,75 @@ func testPairingTokens(t *testing.T, s authstore.Store) {
 	got, _ = s.GetPairingToken(ctx, "pt_hash_2")
 	if got.Active(now) {
 		t.Fatalf("expired token reports active: %+v", got)
+	}
+}
+
+func testCheckoutClaims(t *testing.T, s authstore.Store) {
+	ctx := context.Background()
+	now := time.Now()
+	if _, err := s.GetCheckoutClaim(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("GetCheckoutClaim missing: want ErrNotFound, got %v", err)
+	}
+	c := authstore.CheckoutClaim{
+		Nonce: "nonce_1", StripeSessionID: "cs_1", RedirectURI: "http://127.0.0.1:8080/subscribe/callback",
+		Status: authstore.ClaimPending, CreatedAt: now, ExpiresAt: now.Add(30 * time.Minute),
+	}
+	if err := s.CreateCheckoutClaim(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateCheckoutClaim(ctx, c); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("duplicate CreateCheckoutClaim: want ErrConflict, got %v", err)
+	}
+	// Cannot consume or set code while still pending.
+	if _, err := s.ConsumeCheckoutClaim(ctx, "nonce_1", now); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("consume pending: want ErrNotFound, got %v", err)
+	}
+	if err := s.SetCheckoutClaimCode(ctx, "nonce_1", "codehash"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("set code while pending: want ErrNotFound, got %v", err)
+	}
+	// Mark ready binds the provisioned ids.
+	if err := s.MarkCheckoutClaimReady(ctx, "nonce_1", "acct_1", "lic_1", "sub_1", "cs_1"); err != nil {
+		t.Fatal(err)
+	}
+	// Second mark-ready is an idempotent no-op (Stripe retry).
+	if err := s.MarkCheckoutClaimReady(ctx, "nonce_1", "acct_X", "lic_X", "sub_X", "cs_X"); err != nil {
+		t.Fatalf("idempotent mark-ready: %v", err)
+	}
+	got, err := s.GetCheckoutClaim(ctx, "nonce_1")
+	if err != nil || got.Status != authstore.ClaimReady || got.AccountID != "acct_1" || got.SubscriptionID != "sub_1" {
+		t.Fatalf("after mark-ready: %+v err=%v", got, err)
+	}
+	// Set + look up by code.
+	if err := s.SetCheckoutClaimCode(ctx, "nonce_1", "codehash"); err != nil {
+		t.Fatal(err)
+	}
+	byCode, err := s.GetCheckoutClaimByCode(ctx, "codehash")
+	if err != nil || byCode.Nonce != "nonce_1" {
+		t.Fatalf("GetCheckoutClaimByCode: %+v err=%v", byCode, err)
+	}
+	if _, err := s.GetCheckoutClaimByCode(ctx, ""); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("GetCheckoutClaimByCode empty: want ErrNotFound, got %v", err)
+	}
+	// Consume succeeds once and returns the bound row.
+	consumed, err := s.ConsumeCheckoutClaim(ctx, "nonce_1", now)
+	if err != nil || consumed.AccountID != "acct_1" || consumed.Status != authstore.ClaimConsumed {
+		t.Fatalf("consume: %+v err=%v", consumed, err)
+	}
+	// Second consume must fail (single-use).
+	if _, err := s.ConsumeCheckoutClaim(ctx, "nonce_1", now); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("double consume: want ErrConflict, got %v", err)
+	}
+	// Expired-claim GC.
+	exp := authstore.CheckoutClaim{Nonce: "nonce_2", RedirectURI: "http://127.0.0.1:9/cb", Status: authstore.ClaimPending, CreatedAt: now.Add(-time.Hour), ExpiresAt: now.Add(-time.Minute)}
+	if err := s.CreateCheckoutClaim(ctx, exp); err != nil {
+		t.Fatal(err)
+	}
+	n, err := s.DeleteExpiredCheckoutClaims(ctx, now)
+	if err != nil || n != 1 {
+		t.Fatalf("DeleteExpiredCheckoutClaims: n=%d err=%v", n, err)
+	}
+	if _, err := s.GetCheckoutClaim(ctx, "nonce_2"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("expired claim not deleted: %v", err)
 	}
 }
 

@@ -35,6 +35,7 @@ import (
 const (
 	testWebhookSecret = "whsec_integration_secret"
 	testAdminKey      = "admin_integration_key"
+	testPriceID       = "price_test"
 )
 
 // authHarness runs the Auth & License Service and a relay in-process, sharing a
@@ -77,6 +78,7 @@ func newAuthHarness(t *testing.T, serverOpts ...func(*authservice.ServerConfig))
 		Issuer: testIssuer, Audience: testAud, TokenTTL: 10 * time.Minute, RefreshTTL: 720 * time.Hour,
 		Grace: 168 * time.Hour, AdminKey: testAdminKey,
 		RelayURL: "wss://relay.test/v1/connect", AuthURL: "https://auth.test",
+		CheckoutPriceID: testPriceID, ClaimTTL: 30 * time.Minute,
 	})
 	srvCfg := authservice.ServerConfig{ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", ShutdownDrain: time.Second}
 	for _, opt := range serverOpts {

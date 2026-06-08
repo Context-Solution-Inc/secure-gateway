@@ -24,6 +24,7 @@ type Store struct {
 	pairings       map[string]authstore.Pairing
 	refreshTokens  map[string]authstore.RefreshToken
 	pairingTokens  map[string]authstore.PairingToken
+	checkoutClaims map[string]authstore.CheckoutClaim // keyed by nonce
 	webhookEvents  map[string]authstore.WebhookEvent
 }
 
@@ -38,6 +39,7 @@ func New() *Store {
 		pairings:       map[string]authstore.Pairing{},
 		refreshTokens:  map[string]authstore.RefreshToken{},
 		pairingTokens:  map[string]authstore.PairingToken{},
+		checkoutClaims: map[string]authstore.CheckoutClaim{},
 		webhookEvents:  map[string]authstore.WebhookEvent{},
 	}
 }
@@ -362,6 +364,104 @@ func (s *Store) ConsumePairingToken(_ context.Context, id, resultPairID string, 
 	t.ResultPairID = resultPairID
 	s.pairingTokens[id] = t
 	return nil
+}
+
+// --- Checkout claims ---
+
+func (s *Store) CreateCheckoutClaim(_ context.Context, c authstore.CheckoutClaim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.checkoutClaims[c.Nonce]; ok {
+		return authstore.ErrConflict
+	}
+	s.checkoutClaims[c.Nonce] = c
+	return nil
+}
+
+func (s *Store) GetCheckoutClaim(_ context.Context, nonce string) (authstore.CheckoutClaim, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.checkoutClaims[nonce]
+	if !ok {
+		return authstore.CheckoutClaim{}, authstore.ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *Store) GetCheckoutClaimByCode(_ context.Context, claimCodeHash string) (authstore.CheckoutClaim, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if claimCodeHash == "" {
+		return authstore.CheckoutClaim{}, authstore.ErrNotFound
+	}
+	for _, c := range s.checkoutClaims {
+		if c.ClaimCodeHash == claimCodeHash {
+			return c, nil
+		}
+	}
+	return authstore.CheckoutClaim{}, authstore.ErrNotFound
+}
+
+func (s *Store) MarkCheckoutClaimReady(_ context.Context, nonce, accountID, licenseID, subscriptionID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.checkoutClaims[nonce]
+	if !ok || c.Status != authstore.ClaimPending {
+		return nil // idempotent: missing or already-progressed is a no-op
+	}
+	c.AccountID = accountID
+	c.LicenseID = licenseID
+	c.SubscriptionID = subscriptionID
+	if sessionID != "" {
+		c.StripeSessionID = sessionID
+	}
+	c.Status = authstore.ClaimReady
+	s.checkoutClaims[nonce] = c
+	return nil
+}
+
+func (s *Store) SetCheckoutClaimCode(_ context.Context, nonce, claimCodeHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.checkoutClaims[nonce]
+	if !ok || c.Status != authstore.ClaimReady {
+		return authstore.ErrNotFound
+	}
+	c.ClaimCodeHash = claimCodeHash
+	s.checkoutClaims[nonce] = c
+	return nil
+}
+
+func (s *Store) ConsumeCheckoutClaim(_ context.Context, nonce string, consumedAt time.Time) (authstore.CheckoutClaim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.checkoutClaims[nonce]
+	if !ok {
+		return authstore.CheckoutClaim{}, authstore.ErrNotFound
+	}
+	if c.Status == authstore.ClaimConsumed {
+		return authstore.CheckoutClaim{}, authstore.ErrConflict
+	}
+	if c.Status != authstore.ClaimReady {
+		return authstore.CheckoutClaim{}, authstore.ErrNotFound // still pending
+	}
+	c.Status = authstore.ClaimConsumed
+	c.ConsumedAt = consumedAt
+	s.checkoutClaims[nonce] = c
+	return c, nil
+}
+
+func (s *Store) DeleteExpiredCheckoutClaims(_ context.Context, before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for nonce, c := range s.checkoutClaims {
+		if c.ExpiresAt.Before(before) {
+			delete(s.checkoutClaims, nonce)
+			n++
+		}
+	}
+	return n, nil
 }
 
 // --- Webhook events ---

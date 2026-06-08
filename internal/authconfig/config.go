@@ -75,7 +75,11 @@ type Config struct {
 	// Stripe
 	StripeSecretKey     string        // AUTH_STRIPE_SECRET_KEY (for reconciliation API)
 	StripeWebhookSecret string        // AUTH_STRIPE_WEBHOOK_SECRET (required)
+	StripePriceID       string        // AUTH_STRIPE_PRICE_ID (desktop subscription plan; enables /checkout/start)
 	ReconcileInterval   time.Duration // AUTH_RECONCILE_INTERVAL (nightly heal)
+
+	// Desktop subscription onboarding (claim-token flow).
+	ClaimTTL time.Duration // AUTH_CLAIM_TTL (one-time checkout-claim lifetime; default 30m)
 
 	// Rate limiting (PRD §10.2). In-process, per-instance.
 	TrustProxy             bool // AUTH_TRUST_PROXY: honor X-Forwarded-For for client IP
@@ -117,6 +121,7 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 		SigningKeyFile:      str(getenv, "AUTH_JWT_SIGNING_KEY_FILE", ""),
 		StripeSecretKey:     str(getenv, "AUTH_STRIPE_SECRET_KEY", ""),
 		StripeWebhookSecret: str(getenv, "AUTH_STRIPE_WEBHOOK_SECRET", ""),
+		StripePriceID:       str(getenv, "AUTH_STRIPE_PRICE_ID", ""),
 		AdminKey:            str(getenv, "AUTH_ADMIN_KEY", ""),
 		RelayURL:            str(getenv, "AUTH_RELAY_URL", ""),
 		PublicURL:           str(getenv, "AUTH_PUBLIC_URL", ""),
@@ -165,6 +170,9 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 	if c.ReconcileInterval, err = duration(getenv, "AUTH_RECONCILE_INTERVAL", 24*time.Hour); err != nil {
 		collect(err)
 	}
+	if c.ClaimTTL, err = duration(getenv, "AUTH_CLAIM_TTL", 30*time.Minute); err != nil {
+		collect(err)
+	}
 	if c.ShutdownDrain, err = duration(getenv, "AUTH_SHUTDOWN_DRAIN", 30*time.Second); err != nil {
 		collect(err)
 	}
@@ -193,6 +201,16 @@ func (c *Config) validate() error {
 	}
 	if c.StripeWebhookSecret == "" {
 		errs = append(errs, errors.New("AUTH_STRIPE_WEBHOOK_SECRET is required"))
+	}
+	// The desktop checkout flow needs both the price id and a public URL (the
+	// Stripe success_url base, /v1/checkout/return) and the outbound Stripe API.
+	if c.StripePriceID != "" {
+		if c.PublicURL == "" {
+			errs = append(errs, errors.New("AUTH_PUBLIC_URL is required when AUTH_STRIPE_PRICE_ID is set"))
+		}
+		if c.StripeSecretKey == "" {
+			errs = append(errs, errors.New("AUTH_STRIPE_SECRET_KEY is required when AUTH_STRIPE_PRICE_ID is set"))
+		}
 	}
 
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {

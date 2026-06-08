@@ -33,7 +33,9 @@ type Service struct {
 	grace           time.Duration
 	adminKey        string
 	relayURL        string // advertised in the QR payload endpoints
-	authURL         string // advertised in the QR payload endpoints
+	authURL         string // advertised in the QR payload endpoints; also the checkout return base
+	checkoutPriceID string // Stripe price id for the desktop subscription plan
+	claimTTL        time.Duration
 	now             func() time.Time
 }
 
@@ -54,6 +56,8 @@ type Deps struct {
 	AdminKey        string
 	RelayURL        string
 	AuthURL         string
+	CheckoutPriceID string
+	ClaimTTL        time.Duration
 	Now             func() time.Time // optional; defaults to time.Now
 }
 
@@ -71,10 +75,15 @@ func NewService(d Deps) *Service {
 	if pairingTTL <= 0 {
 		pairingTTL = 5 * time.Minute // FR-2.1 cap
 	}
+	claimTTL := d.ClaimTTL
+	if claimTTL <= 0 {
+		claimTTL = 30 * time.Minute // must outlive a payment + browser return
+	}
 	return &Service{
 		store: d.Store, signer: d.Signer, proc: d.Processor, bp: d.Backplane, metrics: d.Metrics, log: log,
 		issuer: d.Issuer, audience: d.Audience, tokenTTL: d.TokenTTL, refreshTTL: d.RefreshTTL,
 		pairingTokenTTL: pairingTTL, grace: d.Grace, adminKey: d.AdminKey,
-		relayURL: d.RelayURL, authURL: d.AuthURL, now: now,
+		relayURL: d.RelayURL, authURL: d.AuthURL,
+		checkoutPriceID: d.CheckoutPriceID, claimTTL: claimTTL, now: now,
 	}
 }

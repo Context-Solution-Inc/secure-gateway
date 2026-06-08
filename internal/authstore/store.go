@@ -167,6 +167,44 @@ func (t PairingToken) Active(now time.Time) bool {
 	return t.ConsumedAt.IsZero() && now.Before(t.ExpiresAt)
 }
 
+// ClaimStatus tracks the lifecycle of a desktop checkout-claim (one-time
+// onboarding so a freshly-paid desktop can learn its account credential).
+type ClaimStatus string
+
+const (
+	// ClaimPending: checkout started, webhook not yet processed.
+	ClaimPending ClaimStatus = "pending"
+	// ClaimReady: webhook bound account/license/subscription; claimable.
+	ClaimReady ClaimStatus = "ready"
+	// ClaimConsumed: credential handed out exactly once; terminal.
+	ClaimConsumed ClaimStatus = "consumed"
+)
+
+// CheckoutClaim binds a desktop-generated nonce to the account/license/
+// subscription provisioned by a Stripe Checkout, so the desktop can claim its
+// credentials exactly once after payment. No secret is ever stored here: the
+// account secret is minted at claim time and only its hash is written to the
+// account; ClaimCodeHash is the hash of the one-time code delivered over the
+// loopback redirect. RedirectURI is the desktop's validated loopback callback.
+type CheckoutClaim struct {
+	Nonce           string // desktop-generated, primary key
+	StripeSessionID string
+	RedirectURI     string
+	ClaimCodeHash   string // hash of the one-time code; empty until /return mints it
+	AccountID       string
+	LicenseID       string
+	SubscriptionID  string
+	Status          ClaimStatus
+	CreatedAt       time.Time
+	ExpiresAt       time.Time
+	ConsumedAt      time.Time // zero => not consumed
+}
+
+// Active reports whether the claim is usable at now (not consumed, not expired).
+func (c CheckoutClaim) Active(now time.Time) bool {
+	return c.Status != ClaimConsumed && now.Before(c.ExpiresAt)
+}
+
 // WebhookEvent records a received Stripe event for idempotent, durable
 // processing with dead-lettering (PRD §6.4).
 type WebhookEvent struct {
@@ -228,6 +266,24 @@ type Store interface {
 	// pair_id. It returns ErrConflict if the token was already consumed, so
 	// completion is atomic and single-use under concurrent requests.
 	ConsumePairingToken(ctx context.Context, id, resultPairID string, consumedAt time.Time) error
+
+	// Checkout claims (one-time desktop subscription onboarding).
+	CreateCheckoutClaim(ctx context.Context, c CheckoutClaim) error
+	GetCheckoutClaim(ctx context.Context, nonce string) (CheckoutClaim, error)
+	GetCheckoutClaimByCode(ctx context.Context, claimCodeHash string) (CheckoutClaim, error)
+	// MarkCheckoutClaimReady binds the provisioned ids and flips pending->ready.
+	// It is a no-op (no error) when the claim is not pending, so Stripe webhook
+	// retries are idempotent.
+	MarkCheckoutClaimReady(ctx context.Context, nonce, accountID, licenseID, subscriptionID, sessionID string) error
+	// SetCheckoutClaimCode (re)sets the one-time code hash while ready, so a
+	// browser refresh of the success page rotates the code and stays valid.
+	SetCheckoutClaimCode(ctx context.Context, nonce, claimCodeHash string) error
+	// ConsumeCheckoutClaim atomically flips ready->consumed and returns the row.
+	// It returns ErrConflict if already consumed and ErrNotFound if missing or
+	// still pending, so the credential is handed out at most once.
+	ConsumeCheckoutClaim(ctx context.Context, nonce string, consumedAt time.Time) (CheckoutClaim, error)
+	// DeleteExpiredCheckoutClaims is GC for the periodic sweeper.
+	DeleteExpiredCheckoutClaims(ctx context.Context, before time.Time) (int, error)
 
 	// Webhook events (idempotency + dead-letter).
 	// InsertWebhookEventIfAbsent returns inserted=false if the event id was

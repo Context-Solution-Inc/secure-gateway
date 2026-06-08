@@ -15,12 +15,25 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
+
+	"github.com/lley154/secure-gateway/internal/billing"
 )
 
 // API is an in-memory billing.StripeAPI.
 type API struct {
-	mu   sync.RWMutex
-	subs map[string]*stripe.Subscription
+	mu       sync.RWMutex
+	subs     map[string]*stripe.Subscription
+	sessions []FakeSession // checkout sessions created, in order
+}
+
+// FakeSession records a checkout session created via CreateCheckoutSession so a
+// test can assert on it and build the matching webhook event.
+type FakeSession struct {
+	ID         string
+	PriceID    string
+	SuccessURL string
+	CancelURL  string
+	Metadata   map[string]string
 }
 
 // NewAPI returns an empty fake Stripe API.
@@ -52,6 +65,29 @@ func (a *API) ListSubscriptions(_ context.Context) ([]*stripe.Subscription, erro
 		out = append(out, s)
 	}
 	return out, nil
+}
+
+func (a *API) CreateCheckoutSession(_ context.Context, p billing.CheckoutSessionParams) (string, string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sessionID := "cs_" + randHex(8)
+	md := map[string]string{}
+	for k, v := range p.Metadata {
+		md[k] = v
+	}
+	a.sessions = append(a.sessions, FakeSession{
+		ID: sessionID, PriceID: p.PriceID, SuccessURL: p.SuccessURL, CancelURL: p.CancelURL, Metadata: md,
+	})
+	return "https://checkout.stripe.test/" + sessionID, sessionID, nil
+}
+
+// Sessions returns the checkout sessions created so far (test assertions).
+func (a *API) Sessions() []FakeSession {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	out := make([]FakeSession, len(a.sessions))
+	copy(out, a.sessions)
+	return out
 }
 
 // Webhook builds signed webhook request bodies + signature headers.
@@ -130,6 +166,20 @@ func CheckoutCompletedObject(sessionID, customerID, accountID, subID string) jso
 		"client_reference_id": accountID,
 		"subscription":        subID,
 		"mode":                "subscription",
+	})
+}
+
+// CheckoutCompletedWithNonce is like CheckoutCompletedObject but carries a nonce
+// in session metadata, as the desktop onboarding flow does (accountID is left to
+// the webhook to mint, so client_reference_id is empty).
+func CheckoutCompletedWithNonce(sessionID, customerID, subID, nonce string) json.RawMessage {
+	return mustJSON(map[string]any{
+		"id":           sessionID,
+		"object":       "checkout.session",
+		"customer":     customerID,
+		"subscription": subID,
+		"mode":         "subscription",
+		"metadata":     map[string]string{"nonce": nonce},
 	})
 }
 
