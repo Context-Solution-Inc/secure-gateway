@@ -76,6 +76,38 @@ M5 adds in-process rate limiting and abuse banning (`internal/ratelimit`):
 - **NAT considerations.** Per-IP limits can affect many users behind one NAT;
   defaults are generous and tunable. Per-account limits are the precise control.
 
+## 4a. Desktop subscription onboarding (checkout claim-token flow)
+
+The desktop "anywhere access" upgrade (`POST /v1/checkout/start` →
+`checkout.session.completed` webhook → `GET /v1/checkout/return` →
+`POST /v1/accounts/claim`) hands a freshly-paid desktop its account credential.
+`/checkout/start` and `/accounts/claim` are **unauthenticated** (the desktop has
+no account yet), so the controls are:
+
+- **Loopback-only redirect.** `validateLoopbackRedirect` requires the desktop's
+  `redirect_uri` to be `http` to a loopback host (no userinfo). The one-time
+  `claim_code` is delivered only by 302 to that address, so a paid account's
+  credential can never be redirected to an attacker-controlled host (open-redirect
+  / code-exfiltration defense).
+- **Single-use + short TTL.** The claim is consumed atomically
+  (`ConsumeCheckoutClaim`, `UPDATE … WHERE status='ready'`), so a `claim_code`
+  yields the credential at most once; it expires after `AUTH_CLAIM_TTL` (default
+  30m) and is GC'd. Both unauthenticated endpoints are rate-limited per-IP.
+- **Secret never persisted in plaintext / never reissued.** The account secret is
+  minted at claim time and only its SHA-256 hash is stored on the account; the
+  plaintext is returned exactly once in the claim response.
+- **Nonce binding.** A desktop-generated nonce (≥128-bit) ties
+  start→metadata→webhook→return together, and `/checkout/return` checks the
+  Stripe `session_id` against the one recorded at start, so a forged success URL
+  cannot drive a redirect for someone else's session.
+- **`POST /v1/billing-portal`** ("Subscription Settings") is account-secret-authed
+  and only ever mints a Stripe Customer Portal session for that account's own
+  customer id (looked up server-side, never client-supplied).
+
+Residual: an unclaimed account whose secret was never minted simply can't
+authenticate (the subscription/licenses exist but are inert) and the claim
+GC-expires; operator recovery is the admin `POST /v1/accounts` path.
+
 ## 5. FR-3.7 (sender-constrained tokens) — deferred
 
 The PRD lists FR-3.7 (a connect-handshake nonce signed by the device's pairing
@@ -107,6 +139,9 @@ older clients continue to work.
 - Rate limiting / bans: `internal/ratelimit` unit tests; relay + auth 429 and ban
   integration tests.
 - Revocation timing: `test/bench` `TestRevocationPropagation` (≤2s).
+- Desktop onboarding: `TestDesktopCheckoutClaimFlow` (single-use claim, success/409/410)
+  + `TestCheckoutStartRejectsNonLoopbackRedirect` (loopback-only) in
+  `test/integration`; `TestVerifyAcceptsMismatchedAPIVersion` in `internal/billing`.
 - TLS hardening: `internal/httpsec` tests (HSTS, cipher allow-list).
 - Run `/security-review` and `/code-review` (high) over the relay connect path,
   pairing flow, and `internal/ratelimit` before each release; resolve highs.
