@@ -205,6 +205,10 @@ HTTP/JSON API (TLS in prod, or plain HTTP behind a proxy):
 |---|---|---|
 | `POST /v1/webhooks/stripe` | Stripe signature | Ingest subscription events (idempotent, durable) |
 | `POST /v1/accounts` | admin key | Provision an account credential (seam for the account backend) |
+| `POST /v1/checkout/start` | — (IP-limited) | Desktop: create a Stripe Checkout Session + record a pending claim (desktop onboarding) |
+| `GET /v1/checkout/return` | — (browser) | Stripe `success_url`; 302 to the desktop's loopback callback with a one-time `claim_code` |
+| `POST /v1/accounts/claim` | — (IP-limited) | Desktop: exchange the one-time `claim_code` (or `nonce`) for `{account_id, account_secret, license_id, subscription_id}`, once |
+| `GET /v1/subscription` | account secret | Desktop: launch-time status (`status`, `current_period_end`, `max_pairs`) |
 | `POST /v1/devices` | account secret | Register a mobile/desktop device |
 | `POST /v1/pairing-tokens` | account secret | Desktop: mint a one-time pairing token + QR payload (M3) |
 | `POST /v1/pairing-tokens/poll` | account secret | Desktop: learn `pair_id` + mobile pubkey once paired (M3) |
@@ -232,6 +236,37 @@ AUTH_LISTEN_ADDR=127.0.0.1:8080 \
 Point the relay at its JWKS with `RELAY_JWKS_URL=http://127.0.0.1:8080/.well-known/jwks.json`
 (use the shared Redis backplane on both so revocations propagate). `docker
 compose up` brings up the full stack (auth + relay + Redis + Postgres).
+
+### Desktop subscription onboarding (claim-token flow)
+
+`POST /v1/accounts` is admin-gated and returns the account secret once, so a
+freshly-paid desktop has no way to authenticate. The claim-token flow closes that
+gap end to end (used by mobile-agent's "anywhere access" upgrade):
+
+1. **Desktop → `POST /v1/checkout/start`** with a client-generated `nonce` and its
+   loopback `redirect_uri` (`http://127.0.0.1:<port>/subscribe/callback`). The
+   service creates a Stripe Checkout Session (subscription mode) carrying
+   `metadata.nonce`, records a **pending** claim, and returns `checkout_url`. The
+   desktop opens it in the browser.
+2. **Stripe webhook `checkout.session.completed`** provisions the account +
+   license (as before) and, when `metadata.nonce` is present, marks the claim
+   **ready** (idempotent under retries).
+3. **Stripe `success_url` → `GET /v1/checkout/return`** mints a one-time
+   `claim_code`, then 302s the browser to the desktop's loopback callback with it.
+   While the webhook is still pending it serves a self-refreshing interstitial.
+4. **Desktop → `POST /v1/accounts/claim`** exchanges the `claim_code` (or the held
+   `nonce`) for `{account_id, account_secret, license_id, subscription_id}`,
+   **exactly once**. The account secret is **minted at claim time and only its hash
+   is stored** — never persisted in plaintext, never returned twice.
+5. **Every desktop launch → `GET /v1/subscription`** (account-secret auth)
+   re-validates; the relay's revocation channel is still the authoritative cutoff.
+
+Requires `AUTH_STRIPE_PRICE_ID` (the plan's price), `AUTH_STRIPE_SECRET_KEY`, and
+`AUTH_PUBLIC_URL` (the `success_url` base); without `AUTH_STRIPE_PRICE_ID`,
+`/v1/checkout/start` returns `503 checkout_unavailable`. Security: the redirect is
+validated **loopback-only** so a `claim_code` can never be delivered to a remote
+host; the claim is single-use with a short TTL (`AUTH_CLAIM_TTL`, default 30m);
+the `nonce` binds start→webhook→return and `/return` checks `session_id`.
 
 ### Subscription lifecycle (M2 exit criterion)
 
@@ -271,7 +306,10 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 | `AUTH_REFRESH_TTL` | `720h` | refresh token lifetime |
 | `AUTH_GRACE_PERIOD` | `168h` | `past_due` grace window (PRD default 7 days) |
 | `AUTH_STRIPE_WEBHOOK_SECRET` | — | webhook signature secret (required) |
-| `AUTH_STRIPE_SECRET_KEY` | — | Stripe API key; enables nightly reconciliation |
+| `AUTH_STRIPE_SECRET_KEY` | — | Stripe API key; enables nightly reconciliation + desktop checkout |
+| `AUTH_STRIPE_PRICE_ID` | — | subscription plan price; enables `POST /v1/checkout/start` (requires `AUTH_PUBLIC_URL` + `AUTH_STRIPE_SECRET_KEY`) |
+| `AUTH_PUBLIC_URL` | — | this service's public base URL; the checkout `success_url`/`return` base |
+| `AUTH_CLAIM_TTL` | `30m` | one-time checkout-claim lifetime (desktop onboarding) |
 | `AUTH_RECONCILE_INTERVAL` | `24h` | reconciliation cadence |
 | `AUTH_ADMIN_KEY` | — | gates `POST /v1/accounts`; empty ⇒ disabled |
 | `AUTH_SHUTDOWN_DRAIN` | `30s` | graceful shutdown budget |
