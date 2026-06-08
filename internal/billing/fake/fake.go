@@ -105,11 +105,18 @@ func NewWebhook(secret string) *Webhook {
 // the raw body plus a valid Stripe-Signature header. The event's api_version is
 // stamped to the SDK's expected version so webhook.ConstructEvent accepts it.
 func (w *Webhook) Event(eventType stripe.EventType, object json.RawMessage) (body []byte, sigHeader string) {
+	return w.EventWithAPIVersion(eventType, object, stripe.APIVersion)
+}
+
+// EventWithAPIVersion is like Event but stamps an explicit api_version, so tests
+// can simulate a live Stripe account whose API version differs from stripe-go's
+// pinned stripe.APIVersion (the version-mismatch regression).
+func (w *Webhook) EventWithAPIVersion(eventType stripe.EventType, object json.RawMessage, apiVersion string) (body []byte, sigHeader string) {
 	ev := map[string]any{
 		"id":          "evt_" + randHex(8),
 		"object":      "event",
 		"type":        string(eventType),
-		"api_version": stripe.APIVersion,
+		"api_version": apiVersion,
 		"created":     w.now().Unix(),
 		"data":        map[string]any{"object": object},
 	}

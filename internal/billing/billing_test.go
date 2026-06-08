@@ -8,6 +8,7 @@ import (
 	"time"
 
 	stripe "github.com/stripe/stripe-go/v82"
+	"github.com/stripe/stripe-go/v82/webhook"
 
 	"github.com/lley154/secure-gateway/internal/authstore"
 	"github.com/lley154/secure-gateway/internal/authstore/memory"
@@ -243,5 +244,43 @@ func TestReconcileHealsMirror(t *testing.T) {
 	got, _ := f.store.GetLicense(ctx, "lic_1")
 	if got.Status != authstore.LicenseRevoked {
 		t.Fatalf("license not revoked by reconcile: %+v", got)
+	}
+}
+
+// TestVerifyAcceptsMismatchedAPIVersion is the regression guard for the live-
+// webhook 400s: a real Stripe account signs events with its own api_version,
+// which differs from stripe-go's pinned stripe.APIVersion. The default
+// webhook.ConstructEvent rejects those, so every live event 400'd and the
+// desktop checkout claim never went ready. Verify must accept them (it reads
+// only version-stable fields). The hermetic fake stamps the SDK version, so
+// this test forces a deliberately different one.
+func TestVerifyAcceptsMismatchedAPIVersion(t *testing.T) {
+	f := newFixture(t)
+	const otherVersion = "2099-12-31" // certainly != stripe.APIVersion
+	body, sig := f.wh.EventWithAPIVersion(
+		stripe.EventTypeCheckoutSessionCompleted,
+		fake.CheckoutCompletedWithNonce("cs_v", "cus_v", "sub_v", "nonce_versioncheck"),
+		otherVersion,
+	)
+
+	// Sanity: the default constructor (pre-fix behavior) DOES reject this, so the
+	// scenario genuinely exercises the version-mismatch path.
+	if _, err := webhook.ConstructEvent(body, sig, secret); err == nil {
+		t.Fatal("precondition: default ConstructEvent should reject a mismatched api_version")
+	}
+
+	// The fix: Verify accepts it.
+	ev, err := f.proc.Verify(body, sig)
+	if err != nil {
+		t.Fatalf("Verify rejected a live-API-version event (regression): %v", err)
+	}
+	if ev.Type != stripe.EventTypeCheckoutSessionCompleted {
+		t.Fatalf("unexpected event type: %s", ev.Type)
+	}
+
+	// A genuinely bad signature must still fail (the fix only relaxes the version
+	// check, not signature verification).
+	if _, err := f.proc.Verify(body, "t=1,v1=deadbeef"); err == nil {
+		t.Fatal("Verify accepted a bad signature")
 	}
 }
