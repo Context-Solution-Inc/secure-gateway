@@ -35,6 +35,16 @@ public final class QrPayload {
     @JsonProperty("endpoints")
     public Map<String, String> endpoints;
 
+    /**
+     * The desktop's account secret, injected client-side by
+     * {@code DesktopClient.generatePairingQr} (NOT minted by the gateway). The
+     * mobile has no subscription of its own, so the in-person QR scan conveys the
+     * credential the phone needs to issue connection tokens. Optional for backward
+     * compatibility with legacy (gateway-only) QR payloads.
+     */
+    @JsonProperty("account_secret")
+    public String accountSecret;
+
     public QrPayload() {
     }
 

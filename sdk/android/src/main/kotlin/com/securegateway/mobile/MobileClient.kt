@@ -46,6 +46,9 @@ class MobileClient internal constructor(private val config: MobileConfig) {
 
     /** Scan a QR payload: register this device, complete pairing, and exchange public keys. */
     fun pair(qr: QrPayload) {
+        // The relay QR carries the desktop's account secret (the phone has no
+        // subscription of its own) — adopt it before any authed call.
+        qr.accountSecret?.takeIf { it.isNotBlank() }?.let { config.accountSecret = it }
         config.pushWaker.register("mobile-push-token") // host supplies the real FCM token
         ensureDevice()
         val result = auth.completePairing(qr.pairingToken, deviceId, publicKeyB64)
@@ -63,7 +66,7 @@ class MobileClient internal constructor(private val config: MobileConfig) {
         val peer = peerPublicKey ?: error("missing desktop public key")
         val url = relayUrl ?: error("missing relay endpoint")
         val tokens = TokenStore()
-        tokens.update(auth.issueToken(config.accountSecret, deviceId, pid))
+        tokens.update(auth.issueToken(accountSecret(), deviceId, pid))
         val cred = Credentials(url, Role.MOBILE, identity.privateKey(), peer, tokens, auth)
         client = RelayClient(cred) { OkHttpWebSocketTransport() }
             .onMessage(onMessage)
@@ -84,7 +87,10 @@ class MobileClient internal constructor(private val config: MobileConfig) {
 
     private fun ensureDevice() {
         if (deviceId == null) {
-            deviceId = auth.registerDevice(config.accountSecret, Role.MOBILE, publicKeyB64)
+            deviceId = auth.registerDevice(accountSecret(), Role.MOBILE, publicKeyB64)
         }
     }
+
+    private fun accountSecret(): String =
+        config.accountSecret ?: error("no account secret (scan a relay QR, or set MobileConfig.accountSecret)")
 }

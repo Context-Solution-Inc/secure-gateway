@@ -14,7 +14,13 @@ import com.securegateway.core.push.PushWaker
  */
 class MobileConfig {
     lateinit var authUrl: String
-    lateinit var accountSecret: String
+
+    /**
+     * The account credential. May be left null and supplied by the scanned relay
+     * QR ([MobileClient.pair] reads [com.securegateway.core.auth.QrPayload.accountSecret]),
+     * since the phone has no subscription of its own.
+     */
+    var accountSecret: String? = null
     var relayUrl: String? = null
     var deviceId: String? = null
     var keyStore: KeyStore = InMemoryKeyStore()
