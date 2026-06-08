@@ -1,0 +1,41 @@
+# Services for the relay and auth deployments.
+#
+# The relay is the public, internet-facing wss endpoint: front it with a LB that
+# passes WebSocket upgrades and preserves the client IP (PROXY protocol or
+# X-Forwarded-For, with RELAY_TRUST_PROXY=true). LoadBalancer is shown; swap for
+# an Ingress/Gateway with long upgrade timeouts if you terminate TLS at the edge.
+apiVersion: v1
+kind: Service
+metadata:
+  name: relay
+  labels: { app: relay }
+spec:
+  type: LoadBalancer
+  selector: { app: relay }
+  ports:
+    - name: wss
+      port: 443
+      targetPort: 8443
+  # Long-lived WebSocket sessions: keep clients pinned for the connection.
+  sessionAffinity: ClientIP
+  # Preserve the real client source IP at the socket so per-IP rate limiting keys
+  # on the actual client (paired with RELAY_TRUST_PROXY=false). Without this an
+  # L4 LB hides the client behind the LB/node IP. If you instead front the relay
+  # with an L7 ingress that sets X-Forwarded-For, drop this and set
+  # RELAY_TRUST_PROXY=true.
+  externalTrafficPolicy: Local
+---
+# Auth is cluster-internal (the relay reaches its JWKS; clients reach it via the
+# edge/ingress for login/pairing). ClusterIP by default.
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth
+  labels: { app: auth }
+spec:
+  type: ClusterIP
+  selector: { app: auth }
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080

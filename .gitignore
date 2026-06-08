@@ -2,3 +2,6 @@
 /keys/
 *.pem
 *.key.json
+# Production compose secrets / signing keys (never commit)
+/deploy/compose/.env
+/deploy/compose/keys/

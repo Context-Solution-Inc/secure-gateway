@@ -1,0 +1,64 @@
+# PodDisruptionBudgets keep at least one instance of each service available
+# during voluntary disruptions (node drains, rolling updates). Clients reconnect
+# with jittered backoff (FR-1.5), so a single-pod disruption is absorbed.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: relay
+  labels: { app: relay }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: relay }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth
+  labels: { app: auth }
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: auth }
+---
+# Relay autoscaling. Connection density is memory-bound (≈4 GB/instance for the
+# 50k target), so scale on memory primarily; CPU spikes during reconnect storms.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: relay
+  labels: { app: relay }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: relay
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: memory
+        target: { type: Utilization, averageUtilization: 75 }
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth
+  labels: { app: auth }
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

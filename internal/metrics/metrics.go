@@ -30,6 +30,17 @@ type Set struct {
 	ConnectsTotal prometheus.Counter
 	// PeerOffline: msg sends that found no peer slot.
 	PeerOffline prometheus.Counter
+	// RateLimited: pre-upgrade rejections by kind (ip|ban) (PRD §10.2).
+	RateLimited *prometheus.CounterVec
+	// BansActive: IPs currently in a temporary ban (4005 abuse).
+	BansActive prometheus.Gauge
+	// FDUsed/FDLimit: open file descriptors vs the process nofile limit (PRD §9.3).
+	FDUsed  prometheus.Gauge
+	FDLimit prometheus.Gauge
+	// BackplaneUp: 1 when the backplane (Redis/memory) is reachable, else 0.
+	BackplaneUp prometheus.Gauge
+	// TLSCertExpiry: seconds until the serving cert's NotAfter (0 when proxy-terminated).
+	TLSCertExpiry prometheus.Gauge
 }
 
 // New constructs and registers the full metric set on a fresh registry.
@@ -74,10 +85,35 @@ func New() *Set {
 			Name: "relay_peer_offline_total",
 			Help: "Message sends that found no online peer.",
 		}),
+		RateLimited: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "relay_rate_limited_total",
+			Help: "Pre-upgrade connection rejections by kind (ip|ban).",
+		}, []string{"kind"}),
+		BansActive: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "relay_bans_active",
+			Help: "Client IPs currently in a temporary abuse ban.",
+		}),
+		FDUsed: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "relay_fd_used",
+			Help: "Open file descriptors held by the process.",
+		}),
+		FDLimit: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "relay_fd_limit",
+			Help: "Process open-file (nofile) soft limit.",
+		}),
+		BackplaneUp: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "relay_backplane_up",
+			Help: "1 when the slot/routing backplane is reachable, else 0.",
+		}),
+		TLSCertExpiry: prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: "relay_tls_cert_expiry_seconds",
+			Help: "Seconds until the serving TLS certificate expires (0 if proxy-terminated).",
+		}),
 	}
 	reg.MustRegister(
 		s.ConnsActive, s.AuthFailures, s.MessagesRelayed, s.BytesRelayed,
 		s.ForwardLatency, s.SlotEvictions, s.Revocations, s.ConnectsTotal, s.PeerOffline,
+		s.RateLimited, s.BansActive, s.FDUsed, s.FDLimit, s.BackplaneUp, s.TLSCertExpiry,
 	)
 	return s
 }

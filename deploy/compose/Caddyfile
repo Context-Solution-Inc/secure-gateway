@@ -1,0 +1,17 @@
+# Caddy reverse proxy: automatic HTTPS (Let's Encrypt) terminating TLS for the
+# relay and auth services. reverse_proxy transparently handles WebSocket upgrades
+# and sets X-Forwarded-For / X-Forwarded-Proto, so the upstreams run plain HTTP
+# with RELAY_TRUST_PROXY=true / AUTH_TRUST_PROXY=true and see the real client IP.
+{
+	email {$ACME_EMAIL}
+}
+
+# Public wss endpoint -> relay.
+{$RELAY_HOST} {
+	reverse_proxy relay:8443
+}
+
+# Public HTTPS API (login/pairing/JWKS/webhooks) -> auth.
+{$AUTH_HOST} {
+	reverse_proxy auth:8080
+}

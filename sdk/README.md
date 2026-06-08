@@ -51,6 +51,22 @@ and runs the full **Kotlin mobile ↔ Java desktop** flow — pair (QR) → toke
 handshake → bidirectional encrypted send/ack — asserting the relay only ever sees ciphertext.
 It locates the repo's Go toolchain at `~/.local/go-sdk/go/bin/go`.
 
+`./gradlew :java:manualE2E` runs the same Kotlin↔Java flow against an **already-running**
+relay + auth instead of booting its own. The driver expects admin key `admin-e2e-key`,
+account `acct_e2e`, and a seeded license `lic_e2e`, so the backend must be configured to
+match. The easiest no-Stripe backend is the docker compose stack with the dev-seed override:
+
+```sh
+# from the repo root:
+docker compose -f docker-compose.yml -f deploy/compose/docker-compose.dev-seed.yml up --build
+# then, from sdk/:
+./gradlew :java:manualE2E            # add -DauthUrl=… -DwsUrl=… to override the defaults
+```
+
+A `403 forbidden` on account creation means the backend's `AUTH_ADMIN_KEY` doesn't match the
+driver (and/or the license isn't seeded) — use the override above. See the repo README's
+"Local dry-run" section for details.
+
 iOS (macOS only): `cd ios && swift test`.
 
 ## Host-app integration seam (feature flag)

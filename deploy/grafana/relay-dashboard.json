@@ -1,0 +1,136 @@
+{
+  "__comment": "Secure Device Relay + Auth dashboard (PRD §9.3). Import into Grafana; select a Prometheus datasource. Panels mirror deploy/prometheus/alerts.yml.",
+  "title": "Secure Device Relay",
+  "uid": "secure-relay",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Active connections by role",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "expr": "sum(relay_connections_active) by (role)", "legendFormat": "{{role}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Forward latency (p50/p95/p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(relay_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(relay_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(relay_forward_latency_seconds_bucket[5m])) by (le))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Connect rate (reconnect storm)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "ops" } },
+      "targets": [
+        { "expr": "sum(rate(relay_connects_total[1m]))", "legendFormat": "connects/s" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Auth failures by reason",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "expr": "sum(rate(relay_auth_failures_total[5m])) by (reason)", "legendFormat": "{{reason}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "FD saturation (used / limit)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } },
+      "targets": [
+        { "expr": "relay_fd_used / relay_fd_limit", "legendFormat": "{{instance}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Rate limiting & bans",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "sum(rate(relay_rate_limited_total[5m])) by (kind)", "legendFormat": "relay {{kind}}" },
+        { "expr": "sum(rate(auth_rate_limited_total[5m])) by (kind)", "legendFormat": "auth {{kind}}" },
+        { "expr": "relay_bans_active", "legendFormat": "bans active" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Backplane up (relay / auth)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "fieldConfig": { "defaults": { "max": 1, "min": 0 } },
+      "targets": [
+        { "expr": "relay_backplane_up", "legendFormat": "relay {{instance}}" },
+        { "expr": "auth_backplane_up", "legendFormat": "auth {{instance}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Webhook queue & lag",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "expr": "auth_webhooks_pending", "legendFormat": "pending" },
+        { "expr": "auth_webhooks_dead", "legendFormat": "dead" },
+        { "expr": "auth_webhook_oldest_pending_seconds", "legendFormat": "oldest pending (s)" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "TLS certificate expiry (days)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "fieldConfig": { "defaults": { "unit": "d" } },
+      "targets": [
+        { "expr": "relay_tls_cert_expiry_seconds / 86400", "legendFormat": "relay {{instance}}" },
+        { "expr": "auth_tls_cert_expiry_seconds / 86400", "legendFormat": "auth {{instance}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Messages & bytes relayed",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "targets": [
+        { "expr": "sum(rate(relay_messages_relayed_total[5m])) by (direction)", "legendFormat": "msgs {{direction}}" },
+        { "expr": "sum(rate(relay_bytes_relayed_total[5m])) by (direction)", "legendFormat": "bytes {{direction}}" }
+      ]
+    }
+  ]
+}

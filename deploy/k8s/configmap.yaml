@@ -1,0 +1,53 @@
+# Non-secret configuration for the relay and auth services (PRD §9.1).
+# Secrets (DB DSN, Stripe keys, admin key, signing key) live in a Secret — see
+# secrets.example.yaml. Never put secrets in this ConfigMap or in an image.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: relay-config
+  labels: { app: relay }
+data:
+  RELAY_LISTEN_ADDR: ":8443"
+  RELAY_JWT_ISSUER: "https://auth.example.com"
+  RELAY_JWT_AUDIENCE: "relay"
+  # Verify tokens via the auth service's JWKS (production path).
+  RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"
+  RELAY_BACKPLANE: "redis"
+  RELAY_REDIS_ADDR: "redis:6379"
+  # Client-IP source for rate limiting. Default false = use the socket peer IP,
+  # which is correct with the LoadBalancer Service's externalTrafficPolicy: Local
+  # (preserves the client source IP). Set to "true" ONLY when fronted by an L7
+  # proxy/ingress that REPLACES X-Forwarded-For with the client IP — otherwise an
+  # L4 LB collapses every client to one IP and rate limiting mass-429s the fleet.
+  RELAY_TRUST_PROXY: "false"
+  RELAY_LOG_FORMAT: "json"
+  # Rate limiting (PRD §10.2) — tune per environment.
+  RELAY_RATELIMIT_ENABLED: "true"
+  RELAY_RATELIMIT_IP_PER_MIN: "120"
+  RELAY_RATELIMIT_IP_BURST: "60"
+  RELAY_ABUSE_STRIKE_THRESHOLD: "10"
+  RELAY_ABUSE_BAN_WINDOW: "15m"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-config
+  labels: { app: auth }
+data:
+  AUTH_LISTEN_ADDR: ":8080"
+  AUTH_JWT_ISSUER: "https://auth.example.com"
+  AUTH_JWT_AUDIENCE: "relay"
+  AUTH_JWT_ALG: "ES256"
+  AUTH_JWT_KID: "auth-1"
+  AUTH_JWT_SIGNING_KEY_FILE: "/keys/signing.key.json"
+  AUTH_STORE: "postgres"
+  AUTH_BACKPLANE: "redis"
+  AUTH_REDIS_ADDR: "redis:6379"
+  # See RELAY_TRUST_PROXY note. Set "true" only behind an L7 proxy that replaces
+  # X-Forwarded-For with the client IP; the auth service is typically reached via
+  # the same ingress as the public API.
+  AUTH_TRUST_PROXY: "false"
+  AUTH_LOG_FORMAT: "json"
+  AUTH_RATELIMIT_ENABLED: "true"
+  AUTH_RATELIMIT_IP_PER_MIN: "60"
+  AUTH_RATELIMIT_ACCOUNT_PER_MIN: "30"

@@ -17,7 +17,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/lley154/secure-gateway/internal/config"
+	"github.com/lley154/secure-gateway/internal/httpsec"
 	"github.com/lley154/secure-gateway/internal/metrics"
+	"github.com/lley154/secure-gateway/internal/ratelimit"
 	"github.com/lley154/secure-gateway/internal/relay/hub"
 	"github.com/lley154/secure-gateway/internal/relay/session"
 	"github.com/lley154/secure-gateway/internal/token"
@@ -38,6 +40,11 @@ type Server struct {
 	deps    Deps
 	http    *http.Server
 
+	// ipLimiter throttles per-IP connection attempts; bans tracks 4005 abuse
+	// offenders. Both are nil when rate limiting is disabled.
+	ipLimiter *ratelimit.KeyedLimiter
+	bans      *ratelimit.BanTracker
+
 	// baseCtx is the session lifetime context, set when Run starts.
 	baseCtx atomic.Pointer[context.Context]
 
@@ -51,6 +58,11 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 		return nil, errors.New("server requires a verifier and hub")
 	}
 	s := &Server{cfg: cfg, log: log, metrics: m, deps: deps}
+
+	if cfg.RateLimitEnabled {
+		s.ipLimiter = ratelimit.NewKeyedLimiter(float64(cfg.RateLimitIPPerMin), cfg.RateLimitIPBurst)
+		s.bans = ratelimit.NewBanTracker(cfg.AbuseStrikeThreshold, cfg.AbuseStrikeWindow, cfg.AbuseBanWindow)
+	}
 
 	// Install the live-socket token-refresh handler (FR-3.5).
 	deps.Hub.SetRefresher(&refresher{verifier: deps.Verifier, log: log})
@@ -67,7 +79,7 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           mux,
+		Handler:           httpsec.HSTS(mux), // HSTS on the HTTP surface (PRD §10.2)
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -78,14 +90,29 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 func (s *Server) Handler() http.Handler { return s.http.Handler }
 
 func (s *Server) tlsConfig() (*tls.Config, error) {
-	if s.cfg.TLSCertFile == "" {
-		return nil, nil // TLS terminated by a fronting proxy.
+	// nil when no cert is set (TLS terminated by a fronting proxy).
+	return httpsec.ServerTLSConfig(s.cfg.TLSCertFile, s.cfg.TLSMinVersion), nil
+}
+
+// sweepLimiters periodically reclaims idle rate-limiter entries and refreshes
+// the active-bans gauge until the server context is canceled.
+func (s *Server) sweepLimiters(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if s.ipLimiter != nil {
+				s.ipLimiter.Sweep(10 * time.Minute)
+			}
+			if s.bans != nil {
+				s.bans.Sweep()
+				s.metrics.BansActive.Set(float64(s.bans.ActiveBans()))
+			}
+		}
 	}
-	min := uint16(tls.VersionTLS12)
-	if s.cfg.TLSMinVersion == "1.3" {
-		min = tls.VersionTLS13
-	}
-	return &tls.Config{MinVersion: min}, nil
 }
 
 func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
@@ -105,6 +132,10 @@ func (s *Server) sessionCtx() context.Context {
 // Run starts serving and blocks until ctx is canceled, then drains.
 func (s *Server) Run(ctx context.Context) error {
 	s.baseCtx.Store(&ctx)
+
+	if s.ipLimiter != nil || s.bans != nil {
+		go s.sweepLimiters(ctx)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {

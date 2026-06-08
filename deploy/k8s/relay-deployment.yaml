@@ -1,0 +1,61 @@
+# Relay Deployment (PRD §9.1, §9.2). Hardened to mirror docker-compose:
+# non-root, read-only rootfs, all caps dropped, seccomp RuntimeDefault.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay
+  labels: { app: relay }
+spec:
+  replicas: 2 # horizontally scalable behind a Service/LB; Redis backplane shared
+  selector:
+    matchLabels: { app: relay }
+  template:
+    metadata:
+      labels: { app: relay }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8443"
+        prometheus.io/path: "/metrics"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532 # distroless 'nonroot'
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+        # Safe, network-namespaced sysctl. somaxconn / tcp_max_syn_backlog are
+        # "unsafe" in k8s and need the kubelet flag --allowed-unsafe-sysctls
+        # ("net.core.somaxconn", "net.ipv4.tcp_max_syn_backlog"); add them here
+        # once the node allows them. See docs/tuning.md.
+        sysctls:
+          - name: net.ipv4.ip_local_port_range
+            value: "1024 65535"
+      containers:
+        - name: relay
+          image: secure-gateway/relay:latest # pin by digest in production
+          ports:
+            - { name: wss, containerPort: 8443 }
+          envFrom:
+            - configMapRef: { name: relay-config }
+            - secretRef: { name: relay-secrets }
+          resources:
+            requests: { cpu: "2", memory: "4Gi" } # §10.1 instance: 2 vCPU / 4 GB
+            limits: { cpu: "2", memory: "4Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8443 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8443 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          # SIGTERM triggers the relay's bounded drain (sys{shutdown} + close);
+          # give it more than RELAY_SHUTDOWN_DRAIN to finish.
+          lifecycle: {}
+      terminationGracePeriodSeconds: 40

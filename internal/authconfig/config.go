@@ -77,6 +77,14 @@ type Config struct {
 	StripeWebhookSecret string        // AUTH_STRIPE_WEBHOOK_SECRET (required)
 	ReconcileInterval   time.Duration // AUTH_RECONCILE_INTERVAL (nightly heal)
 
+	// Rate limiting (PRD §10.2). In-process, per-instance.
+	TrustProxy             bool // AUTH_TRUST_PROXY: honor X-Forwarded-For for client IP
+	RateLimitEnabled       bool // AUTH_RATELIMIT_ENABLED (default true)
+	RateLimitIPPerMin      int  // AUTH_RATELIMIT_IP_PER_MIN: per-IP requests/min on sensitive endpoints
+	RateLimitIPBurst       int  // AUTH_RATELIMIT_IP_BURST
+	RateLimitAccountPerMin int  // AUTH_RATELIMIT_ACCOUNT_PER_MIN: per-account auth attempts/min
+	RateLimitAccountBurst  int  // AUTH_RATELIMIT_ACCOUNT_BURST
+
 	// Lifecycle
 	ShutdownDrain time.Duration // AUTH_SHUTDOWN_DRAIN
 
@@ -123,8 +131,23 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 		}
 	}
 
+	c.TrustProxy = boolean(getenv, "AUTH_TRUST_PROXY", false, &errs)
+	c.RateLimitEnabled = boolean(getenv, "AUTH_RATELIMIT_ENABLED", true, &errs)
+
 	var err error
 	if c.RedisDB, err = integer(getenv, "AUTH_REDIS_DB", 0); err != nil {
+		collect(err)
+	}
+	if c.RateLimitIPPerMin, err = integer(getenv, "AUTH_RATELIMIT_IP_PER_MIN", 60); err != nil {
+		collect(err)
+	}
+	if c.RateLimitIPBurst, err = integer(getenv, "AUTH_RATELIMIT_IP_BURST", 20); err != nil {
+		collect(err)
+	}
+	if c.RateLimitAccountPerMin, err = integer(getenv, "AUTH_RATELIMIT_ACCOUNT_PER_MIN", 30); err != nil {
+		collect(err)
+	}
+	if c.RateLimitAccountBurst, err = integer(getenv, "AUTH_RATELIMIT_ACCOUNT_BURST", 10); err != nil {
 		collect(err)
 	}
 	if c.TokenTTL, err = duration(getenv, "AUTH_TOKEN_TTL", 10*time.Minute); err != nil {
@@ -211,6 +234,15 @@ func (c *Config) validate() error {
 		errs = append(errs, errors.New("AUTH_PAIRING_TOKEN_TTL must be positive and ≤ 5m (FR-2.1)"))
 	}
 
+	if c.RateLimitEnabled {
+		if c.RateLimitIPPerMin <= 0 || c.RateLimitIPBurst <= 0 {
+			errs = append(errs, errors.New("AUTH_RATELIMIT_IP_PER_MIN and AUTH_RATELIMIT_IP_BURST must be positive when AUTH_RATELIMIT_ENABLED=true"))
+		}
+		if c.RateLimitAccountPerMin <= 0 || c.RateLimitAccountBurst <= 0 {
+			errs = append(errs, errors.New("AUTH_RATELIMIT_ACCOUNT_PER_MIN and AUTH_RATELIMIT_ACCOUNT_BURST must be positive when AUTH_RATELIMIT_ENABLED=true"))
+		}
+	}
+
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":
 	default:
@@ -232,6 +264,19 @@ func str(getenv getenvFn, key, def string) string {
 		return v
 	}
 	return def
+}
+
+func boolean(getenv getenvFn, key string, def bool, errs *[]error) bool {
+	v := getenv(key)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(strings.TrimSpace(v))
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("%s: %w", key, err))
+		return def
+	}
+	return b
 }
 
 func integer(getenv getenvFn, key string, def int) (int, error) {

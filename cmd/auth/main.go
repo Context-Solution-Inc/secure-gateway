@@ -31,6 +31,7 @@ import (
 	redisbp "github.com/lley154/secure-gateway/internal/backplane/redis"
 	"github.com/lley154/secure-gateway/internal/billing"
 	"github.com/lley154/secure-gateway/internal/logging"
+	"github.com/lley154/secure-gateway/internal/obs"
 	"github.com/lley154/secure-gateway/internal/signer"
 	"github.com/lley154/secure-gateway/internal/version"
 )
@@ -103,6 +104,12 @@ func run() error {
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{
 		ListenAddr: cfg.ListenAddr, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
 		TLSMinVersion: cfg.TLSMinVersion, ShutdownDrain: cfg.ShutdownDrain,
+		TrustProxy:             cfg.TrustProxy,
+		RateLimitEnabled:       cfg.RateLimitEnabled,
+		RateLimitIPPerMin:      cfg.RateLimitIPPerMin,
+		RateLimitIPBurst:       cfg.RateLimitIPBurst,
+		RateLimitAccountPerMin: cfg.RateLimitAccountPerMin,
+		RateLimitAccountBurst:  cfg.RateLimitAccountBurst,
 	})
 	if err != nil {
 		return err
@@ -116,12 +123,76 @@ func run() error {
 		runWorkers(ctx, proc, api, cfg, m, log)
 	}()
 
+	// Background telemetry: backplane health, webhook queue depth/lag, TLS cert
+	// expiry (PRD §9.3).
+	go runAuthCollectors(ctx, m, store, bp, cfg.TLSCertFile)
+
 	if err := srv.Run(ctx); err != nil {
 		return err
 	}
 	<-workersDone
 	log.Info("auth service stopped cleanly")
 	return nil
+}
+
+// runAuthCollectors samples backplane health, webhook queue depth/lag, and TLS
+// cert expiry into Prometheus gauges on a ticker until ctx is canceled.
+func runAuthCollectors(ctx context.Context, m *authmetrics.Set, store authstore.Store, bp backplane.Backplane, tlsCertFile string) {
+	const (
+		interval = 15 * time.Second
+		queueCap = 5000 // cap the listing; the gauge saturates beyond this
+	)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	sample := func() {
+		hctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+
+		up := 0.0
+		if bp.HealthCheck(hctx) == nil {
+			up = 1
+		}
+		m.BackplaneUp.Set(up)
+
+		// Pending + failed events are "in flight"; track depth and the oldest age.
+		pending := 0
+		var oldest time.Time
+		for _, st := range []authstore.WebhookStatus{authstore.WebhookPending, authstore.WebhookFailed} {
+			evs, err := store.ListWebhookEventsByStatus(hctx, st, queueCap)
+			if err != nil {
+				return // store unavailable; leave gauges at their last value
+			}
+			pending += len(evs)
+			for _, e := range evs {
+				if oldest.IsZero() || e.ReceivedAt.Before(oldest) {
+					oldest = e.ReceivedAt
+				}
+			}
+		}
+		m.WebhooksPending.Set(float64(pending))
+		lag := 0.0
+		if !oldest.IsZero() {
+			lag = time.Since(oldest).Seconds()
+		}
+		m.WebhookOldestPendingSeconds.Set(lag)
+
+		if dead, err := store.ListWebhookEventsByStatus(hctx, authstore.WebhookDead, queueCap); err == nil {
+			m.WebhooksDead.Set(float64(len(dead)))
+		}
+
+		if secs, ok := obs.CertExpirySeconds(tlsCertFile, time.Now()); ok {
+			m.TLSCertExpiry.Set(secs)
+		}
+	}
+	sample()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			sample()
+		}
+	}
 }
 
 func runWorkers(ctx context.Context, proc *billing.Processor, api billing.StripeAPI, cfg *authconfig.Config, m *authmetrics.Set, log *slog.Logger) {

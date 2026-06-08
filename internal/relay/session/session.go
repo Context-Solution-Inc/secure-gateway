@@ -77,6 +77,11 @@ type Session struct {
 	// refreshed is signaled when the token expiry is extended, so the monitor
 	// resets its expiry timer.
 	refreshed chan struct{}
+
+	// onProtocolViolation, when set, is invoked once per inbound frame that fails
+	// to decode or exceeds the size cap (the 4005 path), so the server can record
+	// an abuse strike against the client (PRD §10.2). It must not block.
+	onProtocolViolation func()
 }
 
 // New builds a session around an accepted WebSocket connection.
@@ -124,6 +129,10 @@ func (s *Session) CloseCode() websocket.StatusCode { return s.closeCode }
 
 // SetSlotRenewer installs the backplane slot-renewal closure (called by hub).
 func (s *Session) SetSlotRenewer(fn func(context.Context) error) { s.renewSlot = fn }
+
+// SetProtocolViolationHook installs a callback invoked when an inbound frame is
+// rejected as a protocol error / oversize (close 4005). Used for abuse striking.
+func (s *Session) SetProtocolViolationHook(fn func()) { s.onProtocolViolation = fn }
 
 // SetExpiry updates the token expiry (unix seconds) after a successful refresh
 // and signals the monitor to reset its expiry timer.
@@ -334,6 +343,9 @@ func (s *Session) readPump(d Delegate) {
 		env, derr := protocol.Decode(data, s.opts.MaxMessageBytes)
 		if derr != nil {
 			s.log.Warn("protocol error", logging.FieldReason, derr.Error())
+			if s.onProtocolViolation != nil {
+				s.onProtocolViolation()
+			}
 			s.CloseWith(protocol.CloseProtocol, "protocol error")
 			return
 		}

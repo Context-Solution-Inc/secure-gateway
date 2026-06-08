@@ -6,7 +6,7 @@ ends dial *out* to the relay over `wss://`; the relay pairs them and forwards
 **end-to-end-encrypted** frames it cannot read. See
 [`prd-secure-mobile-desktop-relay.md`](./prd-secure-mobile-desktop-relay.md).
 
-## Status: M1 — Relay core, M2 — Auth & licensing, M3 — Pairing & E2EE, M4 — Client SDKs
+## Status: M1 — Relay core, M2 — Auth & licensing, M3 — Pairing & E2EE, M4 — Client SDKs, M5 — Hardening & scale
 
 **M1**, the Go relay server:
 
@@ -97,18 +97,37 @@ sdk/ios          iOS SDK in Swift (URLSessionWebSocketTask) — source-only on L
 test/testclient  reusable Go relay client
 test/integration end-to-end tests (echo, lifecycle, slots, revocation, drain,
                  observability, cross-instance over Redis, auth subscription
-                 lifecycle)
+                 lifecycle, rate limiting)
 test/soak        build-tagged idle-connection leak soak
+test/bench       build-tagged §10.1 capacity checks (latency, verify, revoke, storm)
+-- Hardening & scale (M5) --
+internal/ratelimit   per-IP/account token-bucket limiter + strike/ban tracker
+internal/httpsec     shared HSTS + modern cipher allow-list + TLS config + client IP
+internal/obs         fd-usage and TLS cert-expiry sampling helpers
+deploy/k8s           Kubernetes manifests (Deployments, Services, ConfigMap, PDB, HPA)
+deploy/prometheus    alert rules; deploy/grafana dashboard JSON
+docs/                capacity.md, tuning.md, threat-model.md
 ```
 
 ## Build & test
 
 ```sh
-make build      # bin/relay and bin/devtoken (static, stripped)
-make test       # unit + integration tests
-make race       # tests under the race detector
+make build         # bin/relay, bin/auth, bin/devtoken (static, stripped)
+make test          # unit + integration tests
+make race          # tests under the race detector
 make vet
-make docker     # distroless image secure-gateway/relay:dev
+make docker        # distroless image secure-gateway/relay:dev
+make docker-auth   # distroless image secure-gateway/auth:dev
+```
+
+### Capacity checks (M5 / §10.1)
+
+CI-sized assertions for forward latency, token-verify, revocation propagation, and a
+reconnect storm; scale up with env overrides (see [`docs/capacity.md`](./docs/capacity.md)):
+
+```sh
+make bench                                  # CI-sized assertions
+make bench LAT_FRAMES=20000 STORM_CONNS=20000
 ```
 
 ### Soak (M1 exit criterion)
@@ -168,6 +187,13 @@ docker compose up --build
 | `RELAY_BACKPLANE` | `memory` | `memory` or `redis` |
 | `RELAY_REDIS_ADDR` / `RELAY_REDIS_PASSWORD` / `RELAY_REDIS_DB` | — | go-redis connection |
 | `RELAY_SHUTDOWN_DRAIN` | `30s` | graceful drain budget |
+| `RELAY_TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP — set **only** behind a proxy that sets/replaces it (else clients can spoof) |
+| `RELAY_RATELIMIT_ENABLED` | `true` | master switch for per-IP limiting + bans |
+| `RELAY_RATELIMIT_IP_PER_MIN` | `120` | per-IP connection attempts/min |
+| `RELAY_RATELIMIT_IP_BURST` | `60` | per-IP burst allowance |
+| `RELAY_ABUSE_STRIKE_THRESHOLD` | `10` | `4005` strikes before a temporary ban (0 disables) |
+| `RELAY_ABUSE_STRIKE_WINDOW` | `1m` | window strikes accumulate in |
+| `RELAY_ABUSE_BAN_WINDOW` | `15m` | how long a banned IP stays banned |
 | `RELAY_LOG_LEVEL` / `RELAY_LOG_FORMAT` | `info` / `json` | logging |
 | `RELAY_INSTANCE_ID` | auto | overrideable instance identity |
 
@@ -249,6 +275,10 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 | `AUTH_RECONCILE_INTERVAL` | `24h` | reconciliation cadence |
 | `AUTH_ADMIN_KEY` | — | gates `POST /v1/accounts`; empty ⇒ disabled |
 | `AUTH_SHUTDOWN_DRAIN` | `30s` | graceful shutdown budget |
+| `AUTH_TRUST_PROXY` | `false` | use `X-Forwarded-For` for client IP — set **only** behind a trusted proxy |
+| `AUTH_RATELIMIT_ENABLED` | `true` | master switch for per-IP + per-account limiting |
+| `AUTH_RATELIMIT_IP_PER_MIN` / `AUTH_RATELIMIT_IP_BURST` | `60` / `20` | per-IP limit on sensitive endpoints |
+| `AUTH_RATELIMIT_ACCOUNT_PER_MIN` / `AUTH_RATELIMIT_ACCOUNT_BURST` | `30` / `10` | per-account auth-attempt limit |
 | `AUTH_LOG_LEVEL` / `AUTH_LOG_FORMAT` | `info` / `json` | logging |
 | `AUTH_INSTANCE_ID` | auto | overrideable instance identity |
 
@@ -286,6 +316,32 @@ runs the E2E on Linux (no Android SDK required here); a real Android build re-ta
 with `com.android.library` + `lazysodium-android`. The iOS Swift package needs Xcode —
 run its vectors-conformance test on macOS with `cd sdk/ios && swift test` (see
 [`sdk/ios/README.md`](./sdk/ios/README.md)).
+
+## Hardening & scale (M5)
+
+Production hardening on top of M1–M4 — **additive only**, no client-visible contract
+changed (wire envelope, close codes, JWT claims, e2ee vectors, and the SDK API are
+frozen):
+
+- **Rate limiting & abuse control** (`internal/ratelimit`): per-IP connection-attempt
+  limiting and a temporary ban for repeat protocol-error/oversize (`4005`) offenders at
+  the relay, plus per-IP + per-account limiting on the auth token/pairing endpoints. All
+  reject **before** the WebSocket upgrade with `HTTP 429 + Retry-After`. On by default;
+  see the `RELAY_RATELIMIT_*` / `RELAY_ABUSE_*` / `AUTH_RATELIMIT_*` knobs.
+- **Capacity validation** (`test/bench`, `make bench`): CI-asserted §10.1 targets —
+  forward-latency p99 ≤ 50 ms, token-verify p99 ≤ 1 ms, revocation ≤ 2 s, and a scaled
+  reconnect-storm — plus the full 50k-connection procedure in [`docs/capacity.md`](./docs/capacity.md).
+- **Observability**: fd-saturation, backplane-health (`*_backplane_up`), webhook
+  queue/lag, and TLS cert-expiry metrics, with committed Prometheus alert rules
+  ([`deploy/prometheus/alerts.yml`](./deploy/prometheus/alerts.yml)) and a Grafana
+  dashboard ([`deploy/grafana/relay-dashboard.json`](./deploy/grafana/relay-dashboard.json)).
+- **Deployment hardening**: digest-pinned base images, HSTS + an explicit modern cipher
+  allow-list (`internal/httpsec`), kernel/TCP tuning ([`docs/tuning.md`](./docs/tuning.md)),
+  and Kubernetes manifests ([`deploy/k8s/`](./deploy/k8s)).
+- **Threat model**: [`docs/threat-model.md`](./docs/threat-model.md). FR-3.7
+  sender-constrained tokens are deferred to Phase 2 (would change the frozen handshake).
+
+See **[Deployment](#deployment)** below for local dry-run and production VPS instructions.
 
 ### Manual end-to-end verification
 
@@ -370,6 +426,210 @@ JSON (`POST /v1/accounts` → `/v1/devices` → `/v1/pairing-tokens` → `/v1/pa
 `/v1/token`); the QR payload returned by `/v1/pairing-tokens` is what step 4 carries. (Driving
 the *encrypted* exchange by hand isn't practical — the SDK driver above does the X25519/HKDF/
 XChaCha20 handshake for you.) Press Ctrl-C in terminals 1 and 2 to stop.
+
+## Deployment
+
+Two paths are documented here: a **local dry-run** of the full stack on your
+machine (Docker), and a **production deployment on a single VPS** with automatic
+HTTPS. For multi-node/scale-out, Kubernetes manifests live in
+[`deploy/k8s/`](./deploy/k8s) ([`deploy/README.md`](./deploy/README.md)).
+
+Topology in both cases:
+
+```
+clients ──wss/https──▶ TLS termination ──▶ relay (:8443)  ┐
+                       (Caddy in prod,     auth  (:8080)  ├─▶ Redis (slots/routing/revocation)
+                        none for dry-run)                 └─▶ Postgres (auth state)
+```
+
+The relay holds **no secrets** and verifies tokens via the auth service's JWKS;
+the auth service holds the JWT signing key and Stripe secrets. Keep secrets in env
+/ mounted files — **never in an image**.
+
+### Local dry-run (docker compose)
+
+The repo-root [`docker-compose.yml`](./docker-compose.yml) builds both images and
+runs the full stack (Redis + Postgres + auth + relay) with the production
+container hardening (distroless/non-root, read-only rootfs, `cap_drop: ALL`,
+`no-new-privileges`, `nofile` ulimit, and the relay TCP sysctls). It serves plain
+HTTP (no TLS) — intended for a TLS-terminating proxy in prod, and fine for a local
+dry-run.
+
+```sh
+make keys                 # ./keys/relay.key.json (the auth signing key, mounted ro)
+# The auth container runs as the distroless nonroot user (uid 65532), so the
+# bind-mounted key must be readable by it. For this throwaway dev key:
+chmod 0755 keys && chmod 0644 keys/relay.key.json
+docker compose up --build # redis, postgres, auth (:8080), relay (:8443)
+```
+
+> **`permission denied` on `/keys/relay.key.json`?** `make keys` writes the key
+> `0600` owned by your host user, but the container runs as uid 65532 — run the
+> `chmod` above (dev), or `chown` it to the container uid (prod, see below).
+>
+> **Redis `Memory overcommit must be enabled` warning?** Harmless here — our Redis
+> runs with persistence disabled, so it never forks for a background save. It is a
+> host kernel setting (`vm.overcommit_memory`) that cannot be set per-container; to
+> silence it run `sudo sysctl vm.overcommit_memory=1` on the host.
+
+Verify the stack (in another terminal):
+
+```sh
+# Health
+curl -fsS localhost:8080/healthz && echo      # auth  -> {"status":"ok"}
+curl -fsS localhost:8443/healthz && echo      # relay -> ok
+
+# M5 observability gauges are live (collectors run in the binaries)
+curl -s localhost:8443/metrics | grep -E 'relay_backplane_up|relay_fd_used|relay_fd_limit'
+curl -s localhost:8080/metrics | grep -E 'auth_backplane_up|auth_webhooks_pending'
+
+# Rate limiting (default per-IP burst 60): a burst of unauthenticated upgrades
+# returns 401 within the burst, then HTTP 429 + Retry-After
+for i in $(seq 1 90); do curl -s -o /dev/null -w '%{http_code} ' localhost:8443/v1/connect; done; echo
+curl -s -D - -o /dev/null localhost:8443/v1/connect | grep -i retry-after
+
+# Fail-closed on backplane loss (PRD §10.3): stop Redis and watch the gauge flip
+docker compose stop redis
+sleep 18 && curl -s localhost:8443/metrics | grep relay_backplane_up   # -> 0
+docker compose start redis
+```
+
+#### Drive the full SDK flow against the stack (no Stripe)
+
+A real token → pair → connect → encrypted-send flow needs an **account** and a
+valid **license**. Without Stripe there is no license, so layer the dev-seed
+override: it switches auth to the in-memory store and seeds a deterministic active
+license matching the constants the `:java:manualE2E` driver expects (admin key
+`admin-e2e-key`, account `acct_e2e`, license `lic_e2e`).
+
+```sh
+docker compose -f docker-compose.yml \
+               -f deploy/compose/docker-compose.dev-seed.yml up --build
+# then, from sdk/:
+./gradlew :java:manualE2E
+```
+
+It creates the account, pairs the Kotlin (mobile) and Java (desktop) SDKs, and
+exchanges an encrypted message each way. (Without the override you'll get
+`403 forbidden` on account creation — the base compose uses a different admin key
+and the Postgres store, where `AUTH_DEV_SEED` is disabled.) Alternatively, hand-run
+the binaries per [Manual end-to-end verification](#manual-end-to-end-verification).
+Tear down with `docker compose down -v`.
+
+> **No Stripe but want the Postgres store?** Licenses are otherwise minted only by
+> signed Stripe webhooks. Either send a signed test webhook to
+> `POST /v1/webhooks/stripe` (PRD §6.4), or insert a `subscription` + `license`
+> row directly — the dev-seed override above is the simpler path for local testing.
+
+### Production (VPS)
+
+A single 2 vCPU / 4 GB Linux VPS (the PRD §10.1 reference instance) runs the whole
+stack behind **Caddy**, which obtains and renews Let's Encrypt certificates
+automatically, terminates TLS, forwards WebSocket upgrades, and sets
+`X-Forwarded-For` so per-IP rate limiting sees the real client. The bundle lives
+in [`deploy/compose/`](./deploy/compose): `docker-compose.prod.yml`, `Caddyfile`,
+and `.env.example`.
+
+**1. DNS** — point two A records at the VPS public IP:
+`relay.example.com` and `auth.example.com`.
+
+**2. VPS prep** — install Docker Engine + the compose plugin, then apply the host
+kernel/ulimit tuning so the box can hold many connections (full rationale and
+values in [`docs/tuning.md`](./docs/tuning.md)):
+
+```sh
+sudo tee /etc/sysctl.d/90-relay.conf >/dev/null <<'EOF'
+fs.file-max = 2097152
+net.core.somaxconn = 65535
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+vm.overcommit_memory = 1   # silences the Redis startup warning (host-level only)
+EOF
+sudo sysctl --system
+```
+
+Open only **80/443** at the firewall; Redis and Postgres stay on the internal
+Docker network and must not be exposed.
+
+**3. Secrets & signing key** — from the repo on the VPS:
+
+```sh
+cd deploy/compose
+cp .env.example .env          # set RELAY_HOST/AUTH_HOST/ACME_EMAIL/JWT_ISSUER and
+                              # real POSTGRES_PASSWORD, REDIS_PASSWORD, Stripe secrets, admin key
+mkdir -p keys
+go run ../../cmd/devtoken -gen-keys -out-dir ./keys -alg ES256   # writes keys/relay.key.json
+
+# The auth container runs as uid 65532 (distroless nonroot). Give that uid read
+# access WITHOUT making the signing key world-readable:
+sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
+```
+
+`.env` and `keys/` are gitignored — keep them on the host only. Back up
+`keys/relay.key.json`: losing it invalidates every issued token (rotate it via the
+JWKS to roll keys, ≤ 90 days per PRD §10.2).
+
+**4. Launch** (run from `deploy/compose/` so the build context and volumes resolve):
+
+```sh
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
+docker compose -f docker-compose.prod.yml logs -f caddy   # watch the cert issuance
+```
+
+**5. Verify over HTTPS** (certs may take ~30s on first boot):
+
+```sh
+curl -fsS https://auth.example.com/healthz && echo
+curl -fsS https://relay.example.com/healthz && echo
+curl -fsS https://auth.example.com/.well-known/jwks.json | head -c 80; echo
+```
+
+**6. Stripe** — in the Stripe dashboard add a webhook endpoint
+`https://auth.example.com/v1/webhooks/stripe` for the subscription/invoice events
+(PRD §6.4), copy its signing secret into `.env` as `AUTH_STRIPE_WEBHOOK_SECRET`,
+and `docker compose -f docker-compose.prod.yml up -d auth` to apply. Licenses are
+provisioned only by signed webhooks; the nightly reconciliation (needs
+`AUTH_STRIPE_SECRET_KEY`) heals any missed ones.
+
+**7. Provision an account** — once Stripe drives subscriptions this is automatic;
+to create an account credential manually use the admin key:
+
+```sh
+curl -fsS -X POST https://auth.example.com/v1/accounts \
+  -H "Authorization: Bearer $AUTH_ADMIN_KEY" \
+  -d '{"account_id":"acct_123"}'
+```
+
+#### TLS without a reverse proxy (alternative)
+
+To terminate TLS directly at the relay/auth instead of Caddy, mount certificates
+and set `RELAY_TLS_CERT_FILE`/`RELAY_TLS_KEY_FILE` (and the `AUTH_*` equivalents),
+publish `:8443`/`:8080`, and set `RELAY_TRUST_PROXY=false` / `AUTH_TRUST_PROXY=false`
+(the client IP is then the real socket peer). The relay already enforces TLS 1.2+,
+a modern cipher allow-list, and HSTS; `relay_tls_cert_expiry_seconds` then reports
+days-to-expiry for alerting.
+
+#### Operations
+
+- **Zero-downtime deploys**: rebuild and `up -d`; on `SIGTERM` each service sends
+  `sys{shutdown}` and drains for up to `*_SHUTDOWN_DRAIN` (30s) while clients
+  reconnect with jittered backoff.
+- **Backups**: snapshot the `pgdata` volume (auth/license state). Redis holds only
+  ephemeral slots and may be wiped safely (new claims just re-establish).
+- **Monitoring**: scrape `/metrics` on both services with Prometheus, load
+  [`deploy/prometheus/alerts.yml`](./deploy/prometheus/alerts.yml) into
+  `rule_files`, and import
+  [`deploy/grafana/relay-dashboard.json`](./deploy/grafana/relay-dashboard.json).
+  Key alerts: auth-failure spike, fd saturation, `*_backplane_up == 0`, webhook
+  lag, and cert expiry.
+- **Capacity**: this single instance targets ≥ 50k connections; see
+  [`docs/capacity.md`](./docs/capacity.md) for the load-test procedure. When one
+  VPS is not enough, scale to multiple relay instances behind an L4/L7 load
+  balancer with shared (managed) Redis + Postgres — the Kubernetes manifests in
+  [`deploy/k8s/`](./deploy/k8s) do exactly this.
 
 ## Close codes (Appendix B)
 
