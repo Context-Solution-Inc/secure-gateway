@@ -79,7 +79,13 @@ func NewProcessor(c Config) *Processor {
 // Verify checks the Stripe signature on a raw webhook request body and returns
 // the parsed event (PRD §10.2: signature verification is mandatory).
 func (p *Processor) Verify(payload []byte, sigHeader string) (stripe.Event, error) {
-	return webhook.ConstructEvent(payload, sigHeader, p.webhookSecret)
+	// IgnoreAPIVersionMismatch: the relay only reads version-stable fields
+	// (customer/subscription ids, session metadata, subscription status), so a
+	// live account whose API version differs from stripe-go's pinned version must
+	// not be rejected. Without this, ConstructEvent errors on EVERY real event
+	// (the hermetic fake stamps the SDK version, so tests don't catch it).
+	return webhook.ConstructEventWithOptions(payload, sigHeader, p.webhookSecret,
+		webhook.ConstructEventOptions{IgnoreAPIVersionMismatch: true})
 }
 
 // Record stores the event for idempotent, durable processing and reports
