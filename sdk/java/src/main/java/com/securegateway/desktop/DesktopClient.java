@@ -61,6 +61,10 @@ public final class DesktopClient {
         AuthClient.PairingTokenResult r =
                 auth.createPairingToken(config.accountSecret, config.licenseId, deviceId, publicKeyB64);
         this.pairingToken = r.pairingToken;
+        // Embed the account secret client-side so the scanned QR conveys the
+        // credential the mobile needs to issue tokens (it has no subscription of
+        // its own). Not minted by the gateway — it never leaves the QR path.
+        r.qr.accountSecret = config.accountSecret;
         return r.qr;
     }
 
