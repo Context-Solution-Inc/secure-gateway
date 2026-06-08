@@ -81,6 +81,10 @@ func (a *API) CreateCheckoutSession(_ context.Context, p billing.CheckoutSession
 	return "https://checkout.stripe.test/" + sessionID, sessionID, nil
 }
 
+func (a *API) CreateBillingPortalSession(_ context.Context, customerID, _ string) (string, error) {
+	return "https://billing.stripe.test/portal/" + customerID, nil
+}
+
 // Sessions returns the checkout sessions created so far (test assertions).
 func (a *API) Sessions() []FakeSession {
 	a.mu.RLock()

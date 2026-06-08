@@ -35,6 +35,9 @@ type StripeAPI interface {
 	// CreateCheckoutSession creates a subscription-mode Stripe Checkout Session
 	// and returns its hosted URL and session id.
 	CreateCheckoutSession(ctx context.Context, p CheckoutSessionParams) (url, sessionID string, err error)
+	// CreateBillingPortalSession creates a Stripe Customer Portal session for the
+	// given customer and returns its hosted URL (for "Subscription Settings").
+	CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (url string, err error)
 }
 
 // RealAPI is the production StripeAPI backed by stripe-go.
@@ -93,4 +96,17 @@ func (a *RealAPI) CreateCheckoutSession(ctx context.Context, p CheckoutSessionPa
 		return "", "", err
 	}
 	return sess.URL, sess.ID, nil
+}
+
+func (a *RealAPI) CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (string, error) {
+	params := &stripe.BillingPortalSessionParams{Customer: stripe.String(customerID)}
+	params.Context = ctx
+	if returnURL != "" {
+		params.ReturnURL = stripe.String(returnURL)
+	}
+	sess, err := a.sc.BillingPortalSessions.New(params)
+	if err != nil {
+		return "", err
+	}
+	return sess.URL, nil
 }

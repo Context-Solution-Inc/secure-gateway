@@ -55,6 +55,7 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 	mux.HandleFunc("GET /v1/checkout/return", svc.handleCheckoutReturn)
 	mux.HandleFunc("POST /v1/accounts/claim", s.limit(svc.handleClaimAccount))
 	mux.HandleFunc("GET /v1/subscription", s.limit(svc.handleGetSubscription))
+	mux.HandleFunc("POST /v1/billing-portal", s.limit(svc.handleBillingPortal))
 	mux.HandleFunc("POST /v1/devices", svc.handleRegisterDevice)
 	// Sensitive endpoints (pairing + token issuance/refresh) are rate limited.
 	mux.HandleFunc("POST /v1/pairing-tokens", s.limit(svc.handleCreatePairingToken))

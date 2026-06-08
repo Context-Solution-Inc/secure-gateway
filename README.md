@@ -209,6 +209,7 @@ HTTP/JSON API (TLS in prod, or plain HTTP behind a proxy):
 | `GET /v1/checkout/return` | — (browser) | Stripe `success_url`; 302 to the desktop's loopback callback with a one-time `claim_code` |
 | `POST /v1/accounts/claim` | — (IP-limited) | Desktop: exchange the one-time `claim_code` (or `nonce`) for `{account_id, account_secret, license_id, subscription_id}`, once |
 | `GET /v1/subscription` | account secret | Desktop: launch-time status (`status`, `current_period_end`, `max_pairs`) |
+| `POST /v1/billing-portal` | account secret | Desktop: mint a Stripe Customer Portal URL ("Subscription Settings"); requires the portal enabled in the Stripe dashboard |
 | `POST /v1/devices` | account secret | Register a mobile/desktop device |
 | `POST /v1/pairing-tokens` | account secret | Desktop: mint a one-time pairing token + QR payload (M3) |
 | `POST /v1/pairing-tokens/poll` | account secret | Desktop: learn `pair_id` + mobile pubkey once paired (M3) |
@@ -260,6 +261,17 @@ gap end to end (used by mobile-agent's "anywhere access" upgrade):
    is stored** — never persisted in plaintext, never returned twice.
 5. **Every desktop launch → `GET /v1/subscription`** (account-secret auth)
    re-validates; the relay's revocation channel is still the authoritative cutoff.
+
+The desktop may also claim by polling `POST /v1/accounts/claim` with the held
+`nonce` (fallback for when the browser redirect doesn't reach the loopback
+callback). When that poll wins the race it consumes the single-use claim, so
+`GET /v1/checkout/return` then finds the claim **consumed** and shows the success
+page (the desktop already has its credential) — it is not treated as expired.
+
+**"Subscription Settings"** opens the **Stripe Customer Portal** via `POST
+/v1/billing-portal` (mints a portal session for the account's customer). Enable
+the portal once in the Stripe dashboard (test: Settings → Billing → Customer
+portal), or the call returns `502 stripe_error`.
 
 Requires `AUTH_STRIPE_PRICE_ID` (the plan's price), `AUTH_STRIPE_SECRET_KEY`, and
 `AUTH_PUBLIC_URL` (the `success_url` base); without `AUTH_STRIPE_PRICE_ID`,

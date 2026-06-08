@@ -130,6 +130,13 @@ var pendingPage = template.Must(template.New("pending").Parse(`<!doctype html>
 <p>This page will refresh automatically. You can return to the app shortly.</p>
 </body>`))
 
+func successHTML(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte("<!doctype html><meta charset=utf-8><title>Mobile Agent</title>" +
+		"<body style=\"font-family:sans-serif;text-align:center;margin-top:4em\">" +
+		"<h2>Subscription activated. You can return to the Mobile Agent app.</h2></body>"))
+}
+
 func (s *Service) handleCheckoutReturn(w http.ResponseWriter, r *http.Request) {
 	nonce := r.URL.Query().Get("nonce")
 	sessionID := r.URL.Query().Get("session_id")
@@ -138,29 +145,33 @@ func (s *Service) handleCheckoutReturn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown or expired checkout", http.StatusNotFound)
 		return
 	}
-	if !claim.Active(s.now()) {
-		http.Error(w, "checkout expired", http.StatusGone)
-		return
-	}
 	// Bind the session id Stripe redirected with to the one we recorded at start
 	// (CSRF / cross-session defense).
 	if sessionID != "" && claim.StripeSessionID != "" && sessionID != claim.StripeSessionID {
 		http.Error(w, "session mismatch", http.StatusBadRequest)
 		return
 	}
-	if claim.Status == authstore.ClaimPending {
+	switch {
+	case claim.Status == authstore.ClaimConsumed:
+		// Already claimed — almost always the desktop's fallback poll won the race
+		// (it polls the held nonce and consumes the claim as soon as it's ready).
+		// The desktop already has its credential, so show success, not "expired".
+		successHTML(w)
+	case s.now().After(claim.ExpiresAt):
+		http.Error(w, "checkout expired", http.StatusGone)
+	case claim.Status == authstore.ClaimPending:
 		// Webhook hasn't landed yet; show a self-refreshing interstitial.
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_ = pendingPage.Execute(w, nil)
-		return
+	default:
+		// Ready: mint a one-time claim code, store its hash, redirect to the desktop.
+		claimCode := authstore.NewID("clm")
+		if err := s.store.SetCheckoutClaimCode(r.Context(), nonce, hashSecret(claimCode)); err != nil {
+			http.Error(w, "could not finalize checkout", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, appendQuery(claim.RedirectURI, "claim_code", claimCode), http.StatusFound)
 	}
-	// Ready: mint a one-time claim code, store its hash, redirect to the desktop.
-	claimCode := authstore.NewID("clm")
-	if err := s.store.SetCheckoutClaimCode(r.Context(), nonce, hashSecret(claimCode)); err != nil {
-		http.Error(w, "could not finalize checkout", http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, appendQuery(claim.RedirectURI, "claim_code", claimCode), http.StatusFound)
 }
 
 // --- POST /v1/accounts/claim ---
@@ -228,6 +239,40 @@ func (s *Service) handleClaimAccount(w http.ResponseWriter, r *http.Request) {
 		LicenseID:      consumed.LicenseID,
 		SubscriptionID: consumed.SubscriptionID,
 	})
+}
+
+// --- POST /v1/billing-portal (account-secret auth) ---
+
+type billingPortalResp struct {
+	URL string `json:"url"`
+}
+
+// handleBillingPortal mints a Stripe Customer Portal session for the
+// authenticated account's customer ("Subscription Settings"). The portal must be
+// enabled once in the Stripe dashboard (test: Settings → Billing → Customer
+// portal); otherwise Stripe returns an error surfaced here as 502.
+func (s *Service) handleBillingPortal(w http.ResponseWriter, r *http.Request) {
+	accountID, err := s.authenticateAccount(r.Context(), r)
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	acct, err := s.store.GetAccount(r.Context(), accountID)
+	if err != nil || acct.StripeCustomerID == "" {
+		writeErr(w, http.StatusConflict, "no_customer")
+		return
+	}
+	url, err := s.proc.CreateBillingPortalSession(r.Context(), acct.StripeCustomerID, strings.TrimRight(s.authURL, "/"))
+	if err != nil {
+		if errors.Is(err, billing.ErrStripeNotConfigured) {
+			writeErr(w, http.StatusServiceUnavailable, "portal_unavailable")
+			return
+		}
+		s.log.Error("create billing portal session", "err", err.Error())
+		writeErr(w, http.StatusBadGateway, "stripe_error")
+		return
+	}
+	writeJSON(w, http.StatusOK, billingPortalResp{URL: url})
 }
 
 // --- GET /v1/subscription (account-secret auth; launch-time validation) ---

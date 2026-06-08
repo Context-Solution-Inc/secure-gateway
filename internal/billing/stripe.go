@@ -176,6 +176,16 @@ func (p *Processor) CreateCheckoutSession(ctx context.Context, in CheckoutSessio
 	return p.api.CreateCheckoutSession(ctx, in)
 }
 
+// CreateBillingPortalSession opens a Stripe Customer Portal session for the
+// customer (the "Subscription Settings" destination). ErrStripeNotConfigured
+// when no API is wired.
+func (p *Processor) CreateBillingPortalSession(ctx context.Context, customerID, returnURL string) (string, error) {
+	if p.api == nil {
+		return "", ErrStripeNotConfigured
+	}
+	return p.api.CreateBillingPortalSession(ctx, customerID, returnURL)
+}
+
 // --- Handlers ---
 
 func (p *Processor) handleCheckoutCompleted(ctx context.Context, ev stripe.Event) error {
