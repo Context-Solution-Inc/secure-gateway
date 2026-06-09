@@ -50,7 +50,7 @@ dependencies {
     implementation(libs.lazysodium.android) {
         exclude(group = "net.java.dev.jna", module = "jna")
     }
-    implementation("net.java.dev.jna:jna:5.12.1@aar")
+    implementation("net.java.dev.jna:jna:5.17.0@aar")
 }
 
 // Preserve the com.securegateway:android coordinate (mobile-agent consumes it unchanged):
