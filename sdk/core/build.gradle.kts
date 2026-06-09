@@ -16,11 +16,20 @@ dependencies {
     // construction that matches the Go reference byte-for-byte (Tink/CryptoKit's
     // ChaChaPoly is the 12-byte IETF variant and would diverge). HKDF-SHA256 is done
     // with javax.crypto.Mac (RFC 5869), not libsodium, since libsodium has no HKDF.
-    api(libs.lazysodium.java)
-    api(libs.jna)
+    //
+    // lazysodium is compileOnly: Crypto types against the base LazySodium (the concrete
+    // binding arrives via a platform SodiumProvider, see that interface), so :core does
+    // NOT leak lazysodium-java onto consumers. The desktop :java and the Android AAR each
+    // declare their own flavor (lazysodium-java vs lazysodium-android). jna is dropped
+    // entirely — nothing here imports it directly, and each lazysodium flavor pulls the
+    // right jna variant (the jar on the JVM, the @aar on Android).
+    compileOnly(libs.lazysodium.java)
     api(libs.jackson.databind)
     runtimeOnly(libs.slf4j.nop)
 
+    // :core's own unit tests run Crypto, so they need a concrete binding + a registered
+    // JVM SodiumProvider (the provider impl lives in test, never in main — see below).
+    testImplementation(libs.lazysodium.java)
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)
 }

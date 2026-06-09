@@ -24,12 +24,20 @@ configurations[e2eTest.runtimeOnlyConfigurationName].extendsFrom(configurations.
 dependencies {
     api(project(":core"))
 
+    // The desktop SDK's runtime libsodium binding. :core declares lazysodium-java only
+    // compileOnly (so the Android AAR doesn't inherit it), so the JVM flavor + the
+    // registered JVM SodiumProvider (this module's main resources) are supplied here.
+    implementation(libs.lazysodium.java)
+
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)
 
-    // The E2E source set drives both SDKs through the relay.
+    // The E2E source set drives both SDKs through the relay. It needs the JVM libsodium
+    // binding explicitly too (the Kotlin mobile SDK from :android runs on the JVM here);
+    // the JVM SodiumProvider reaches it via :java main's classes + resources.
     "e2eTestImplementation"(project(":core"))
     "e2eTestImplementation"(project(":android"))
+    "e2eTestImplementation"(libs.lazysodium.java)
 }
 
 tasks.test { useJUnitPlatform() }

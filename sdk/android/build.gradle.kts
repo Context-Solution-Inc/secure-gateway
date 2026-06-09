@@ -16,6 +16,10 @@ dependencies {
     api(project(":core"))
     api(libs.okhttp)
 
+    // The JVM unit tests run the shared :core Crypto, so they need a concrete libsodium
+    // binding + a registered JVM SodiumProvider (test-only — the real Android flavor is
+    // in :android-aar). :core no longer leaks lazysodium-java transitively.
+    testImplementation(libs.lazysodium.java)
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.launcher)
 }

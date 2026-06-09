@@ -1,7 +1,6 @@
 package com.securegateway.core;
 
-import com.goterl.lazysodium.LazySodiumJava;
-import com.goterl.lazysodium.SodiumJava;
+import com.goterl.lazysodium.LazySodium;
 import com.goterl.lazysodium.interfaces.AEAD;
 import com.goterl.lazysodium.interfaces.DiffieHellman;
 import java.nio.ByteBuffer;
@@ -9,6 +8,7 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
+import java.util.ServiceLoader;
 
 /**
  * The E2EE crypto primitives (PRD FR-5), matching the Go reference
@@ -39,14 +39,21 @@ public final class Crypto {
     static final String DIR_M2D = "m2d"; // mobile -> desktop
     static final String DIR_D2M = "d2m"; // desktop -> mobile
 
-    // lazysodium is thread-safe (stateless native calls); share one instance.
-    private static final LazySodiumJava SODIUM = new LazySodiumJava(new SodiumJava());
+    // lazysodium is thread-safe (stateless native calls); share one instance. The
+    // concrete binding (LazySodiumJava on the JVM, LazySodiumAndroid on device) is
+    // supplied by the platform's registered SodiumProvider (see that interface).
+    private static final LazySodium SODIUM = ServiceLoader.load(SodiumProvider.class)
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException(
+                    "crypto: no SodiumProvider registered on the classpath "
+                            + "(META-INF/services/com.securegateway.core.SodiumProvider)"))
+            .get();
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private Crypto() {
     }
 
-    static LazySodiumJava sodium() {
+    static LazySodium sodium() {
         return SODIUM;
     }
 
