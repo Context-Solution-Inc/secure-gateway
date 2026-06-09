@@ -5,35 +5,31 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securegateway.core.Role;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
+import java.net.URL;
 
 /**
  * HTTPS client for the Auth &amp; License Service pairing/token API (PRD FR-2/FR-3),
  * matching {@code internal/authservice}. All public keys are base64-std of raw 32 bytes;
  * service errors ({@code {"error":"<code>"}}) surface as {@link AuthException}.
  *
- * <p>Built on the JDK {@link HttpClient} (zero added dependency, JDK 11+), so it is shared
- * unchanged by the desktop (Java) and mobile (Kotlin/JVM) SDKs.
+ * <p>Built on {@link HttpURLConnection} so it is shared unchanged by the desktop (Java) and
+ * mobile (Android) SDKs. NOTE: {@code java.net.http.HttpClient} (JDK 11+) is NOT on Android —
+ * using it here threw {@code NoClassDefFoundError} on-device.
  */
 public final class AuthClient {
 
     private final URI baseUrl;
-    private final HttpClient http;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public AuthClient(String baseUrl) {
-        this(baseUrl, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
-    }
-
-    public AuthClient(String baseUrl, HttpClient http) {
         // Normalize trailing slash so path joins are predictable.
         this.baseUrl = URI.create(baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
-        this.http = http;
     }
 
     // --- Account / device (admin + account-authenticated seams) ---
@@ -92,42 +88,72 @@ public final class AuthClient {
         return send("/v1/token/refresh", null, body("refresh_token", refreshToken), TokenResult.class);
     }
 
+    /**
+     * Revoke a pairing (FR-2.5): the peer's live session is cut and the pair slot freed,
+     * so a new device can pair. Account-authenticated.
+     */
+    public void unpair(String accountSecret, String pairId) {
+        send("/v1/pairings/unpair", accountSecret, body("pair_id", pairId), JsonNode.class);
+    }
+
     // --- transport ---
 
     private <T> T send(String path, String bearer, ObjectMapperBody body, Class<T> type) {
+        HttpURLConnection conn = null;
         try {
-            HttpRequest.Builder req = HttpRequest.newBuilder()
-                    .uri(baseUrl.resolve(path))
-                    .timeout(Duration.ofSeconds(15))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofByteArray(mapper.writeValueAsBytes(body.node)));
+            URL url = baseUrl.resolve(path).toURL();
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(10_000);
+            conn.setReadTimeout(15_000);
+            conn.setRequestMethod("POST");
+            conn.setRequestProperty("Content-Type", "application/json");
             if (bearer != null) {
-                req.header("Authorization", "Bearer " + bearer);
+                conn.setRequestProperty("Authorization", "Bearer " + bearer);
             }
-            HttpResponse<byte[]> resp = http.send(req.build(), HttpResponse.BodyHandlers.ofByteArray());
-            if (resp.statusCode() / 100 != 2) {
-                throw error(resp);
+            conn.setDoOutput(true);
+            byte[] payload = mapper.writeValueAsBytes(body.node);
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(payload);
             }
-            return mapper.readValue(resp.body(), type);
-        } catch (IOException | InterruptedException e) {
-            if (e instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
+            int status = conn.getResponseCode();
+            if (status / 100 != 2) {
+                throw error(status, readAll(conn.getErrorStream()));
             }
+            return mapper.readValue(readAll(conn.getInputStream()), type);
+        } catch (IOException e) {
             throw new AuthException(0, "transport_error", path + ": " + e.getMessage());
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
     }
 
-    private AuthException error(HttpResponse<byte[]> resp) {
-        String code = "http_" + resp.statusCode();
+    private static byte[] readAll(InputStream in) throws IOException {
+        if (in == null) {
+            return new byte[0];
+        }
+        try (InputStream s = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = s.read(buf)) != -1) {
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    private AuthException error(int status, byte[] respBody) {
+        String code = "http_" + status;
         try {
-            JsonNode n = mapper.readTree(resp.body());
-            if (n.hasNonNull("error")) {
+            JsonNode n = mapper.readTree(respBody);
+            if (n != null && n.hasNonNull("error")) {
                 code = n.get("error").asText();
             }
         } catch (IOException ignored) {
             // non-JSON error body; keep the http_<status> code.
         }
-        return new AuthException(resp.statusCode(), code, "auth service returned " + resp.statusCode() + " (" + code + ")");
+        return new AuthException(status, code, "auth service returned " + status + " (" + code + ")");
     }
 
     private ObjectMapperBody body(String k, String v) {

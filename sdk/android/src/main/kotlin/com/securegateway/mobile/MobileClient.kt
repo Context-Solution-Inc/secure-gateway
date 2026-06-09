@@ -49,12 +49,16 @@ class MobileClient internal constructor(private val config: MobileConfig) {
         // The relay QR carries the desktop's account secret (the phone has no
         // subscription of its own) — adopt it before any authed call.
         qr.accountSecret?.takeIf { it.isNotBlank() }?.let { config.accountSecret = it }
+        val log = config.logger
+        log("pair: auth=${config.authUrl} relay=${qr.relayEndpoint() ?: config.relayUrl} secret=${if (config.accountSecret.isNullOrBlank()) "MISSING" else "present"}")
         config.pushWaker.register("mobile-push-token") // host supplies the real FCM token
         ensureDevice()
+        log("pair: device registered id=$deviceId; completing pairing token=${qr.pairingToken.take(8)}…")
         val result = auth.completePairing(qr.pairingToken, deviceId, publicKeyB64)
         pairId = result.pairId
         peerPublicKey = Base64.getDecoder().decode(result.desktopPublicKey)
         relayUrl = qr.relayEndpoint() ?: relayUrl
+        log("pair: ok pairId=$pairId peerPubKey=${peerPublicKey?.size}B relay=$relayUrl")
     }
 
     /** Parse a scanned QR JSON string and pair. */
@@ -62,13 +66,16 @@ class MobileClient internal constructor(private val config: MobileConfig) {
 
     /** Issue a connection token and open the relay session. Requires [pair] to have run. */
     fun connect() {
+        val log = config.logger
         val pid = pairId ?: error("call pair(qr) first")
         val peer = peerPublicKey ?: error("missing desktop public key")
         val url = relayUrl ?: error("missing relay endpoint")
+        log("connect: issuing token (account secret) for pairId=$pid device=$deviceId")
         val tokens = TokenStore()
         tokens.update(auth.issueToken(accountSecret(), deviceId, pid))
+        log("connect: token issued; opening relay session at $url (the wss dial runs async — watch for state/onFailure below)")
         val cred = Credentials(url, Role.MOBILE, identity.privateKey(), peer, tokens, auth)
-        client = RelayClient(cred) { OkHttpWebSocketTransport() }
+        client = RelayClient(cred) { OkHttpWebSocketTransport(logger = log) }
             .onMessage(onMessage)
             .onStateChange(onStateChange)
             .also { it.connect() }
@@ -80,6 +87,19 @@ class MobileClient internal constructor(private val config: MobileConfig) {
     fun state(): ConnectionState? = client?.state()
 
     fun pairId(): String? = pairId
+
+    /**
+     * Revoke this pairing at the gateway (FR-2.5): the relay session is cut and the pair
+     * slot freed, so the desktop can pair a new phone. No-op if pairing never completed.
+     * Blocking HTTP — call off the main thread. Call [close] afterward to drop the session.
+     */
+    fun unpair() {
+        val pid = pairId ?: return
+        config.logger("unpair: revoking pairId=$pid")
+        auth.unpair(accountSecret(), pid)
+        pairId = null
+        peerPublicKey = null
+    }
 
     fun close() {
         client?.close()

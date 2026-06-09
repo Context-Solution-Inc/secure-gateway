@@ -21,6 +21,10 @@ class OkHttpWebSocketTransport(
     private val client: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(25, TimeUnit.SECONDS)
         .build(),
+    // Diagnostics sink (defaults no-op). The wss dial happens here, and the relay state
+    // machine swallows connect failures into a silent reconnect — so this is where the
+    // real cause (refused/TLS/401/relay close code) is visible. Host wires it to its log.
+    private val logger: (String) -> Unit = {},
 ) : Transport {
 
     private val socket = AtomicReference<WebSocket?>(null)
@@ -28,6 +32,7 @@ class OkHttpWebSocketTransport(
     override fun connect(wsUrl: String, bearerToken: String, listener: Transport.Listener) {
         // OkHttp's HttpUrl uses http/https; map the ws/wss scheme accordingly.
         val httpUrl = wsUrl.replaceFirst(Regex("^ws"), "http")
+        logger("wss: dialing $httpUrl (token=${bearerToken.length}B)")
         val request = Request.Builder()
             .url(httpUrl)
             .header("Authorization", "Bearer $bearerToken")
@@ -38,6 +43,7 @@ class OkHttpWebSocketTransport(
 
         val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                logger("wss: onOpen http=${response.code}")
                 response.close()
                 opened.countDown()
                 listener.onOpen()
@@ -54,14 +60,19 @@ class OkHttpWebSocketTransport(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                logger("wss: onClosing code=$code reason='$reason'")
                 listener.onClosed(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                logger("wss: onClosed code=$code reason='$reason'")
                 listener.onClosed(code, reason)
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                logger("wss: onFailure ${t.javaClass.simpleName}: ${t.message}" +
+                    (response?.let { " (http=${it.code})" } ?: "") +
+                    if (opened.count > 0) " [pre-open]" else " [post-open]")
                 response?.close()
                 if (opened.count > 0) {
                     failure.set(t)
@@ -74,14 +85,22 @@ class OkHttpWebSocketTransport(
         socket.set(ws)
 
         if (!opened.await(20, TimeUnit.SECONDS)) {
+            logger("wss: open timed out after 20s (no onOpen/onFailure) — relay unreachable?")
             ws.cancel()
             throw java.io.IOException("websocket open timed out")
         }
         failure.get()?.let { ws.cancel(); throw it }
+        logger("wss: connected")
     }
 
     override fun send(frame: ByteArray) {
-        socket.get()?.send(String(frame, Charsets.UTF_8))
+        val ws = socket.get()
+        if (ws == null) {
+            logger("wss: send dropped — socket is null (not connected)")
+            return
+        }
+        val accepted = ws.send(String(frame, Charsets.UTF_8))
+        if (!accepted) logger("wss: send rejected (buffer full / closing), ${frame.size}B")
     }
 
     override fun selfManagesLiveness(): Boolean = true

@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /**
  * Desktop {@link Transport} on {@code java.net.http.WebSocket} (JDK 11+, zero added
@@ -19,26 +20,48 @@ import java.util.concurrent.TimeUnit;
 public final class JdkWebSocketTransport implements Transport {
 
     private final HttpClient httpClient;
+    // Diagnostics sink (defaults no-op). The wss dial happens here, and the relay state
+    // machine swallows connect failures into a silent reconnect — so this is where the real
+    // cause (refused/TLS/401/relay close code) is visible. Mirrors the mobile transport.
+    private final Consumer<String> logger;
     private volatile WebSocket webSocket;
     private final StringBuilder textBuffer = new StringBuilder();
     // Serializes outbound WebSocket operations (the API forbids overlapping sends).
     private CompletableFuture<WebSocket> sendChain = new CompletableFuture<>();
 
     public JdkWebSocketTransport() {
-        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build());
+        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), s -> { });
+    }
+
+    public JdkWebSocketTransport(Consumer<String> logger) {
+        this(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build(), logger);
     }
 
     public JdkWebSocketTransport(HttpClient httpClient) {
+        this(httpClient, s -> { });
+    }
+
+    public JdkWebSocketTransport(HttpClient httpClient, Consumer<String> logger) {
         this.httpClient = httpClient;
+        this.logger = logger;
     }
 
     @Override
     public void connect(String wsUrl, String bearerToken, Listener listener) throws Exception {
-        WebSocket ws = httpClient.newWebSocketBuilder()
-                .header("Authorization", "Bearer " + bearerToken)
-                .connectTimeout(Duration.ofSeconds(15))
-                .buildAsync(URI.create(wsUrl), new Adapter(listener))
-                .get(20, TimeUnit.SECONDS);
+        logger.accept("wss: dialing " + wsUrl + " (token=" + bearerToken.length() + "B)");
+        WebSocket ws;
+        try {
+            ws = httpClient.newWebSocketBuilder()
+                    .header("Authorization", "Bearer " + bearerToken)
+                    .connectTimeout(Duration.ofSeconds(15))
+                    .buildAsync(URI.create(wsUrl), new Adapter(listener))
+                    .get(20, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Throwable c = e.getCause() != null ? e.getCause() : e;
+            logger.accept("wss: dial FAILED " + c.getClass().getSimpleName() + ": " + c.getMessage());
+            throw e;
+        }
+        logger.accept("wss: connected");
         this.webSocket = ws;
         this.sendChain.complete(ws);
         ws.request(Long.MAX_VALUE);
@@ -87,6 +110,7 @@ public final class JdkWebSocketTransport implements Transport {
 
         @Override
         public void onOpen(WebSocket ws) {
+            logger.accept("wss: onOpen");
             listener.onOpen();
             ws.request(Long.MAX_VALUE);
         }
@@ -119,12 +143,14 @@ public final class JdkWebSocketTransport implements Transport {
 
         @Override
         public CompletionStage<?> onClose(WebSocket ws, int statusCode, String reason) {
+            logger.accept("wss: onClose code=" + statusCode + " reason='" + reason + "'");
             listener.onClosed(statusCode, reason);
             return null;
         }
 
         @Override
         public void onError(WebSocket ws, Throwable error) {
+            logger.accept("wss: onError " + error.getClass().getSimpleName() + ": " + error.getMessage());
             listener.onError(error);
         }
     }
