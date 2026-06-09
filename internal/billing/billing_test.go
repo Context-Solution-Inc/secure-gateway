@@ -284,3 +284,54 @@ func TestVerifyAcceptsMismatchedAPIVersion(t *testing.T) {
 		t.Fatal("Verify accepted a bad signature")
 	}
 }
+
+// Regression: when customer.subscription.created is processed BEFORE
+// checkout.session.completed (Stripe can deliver them in that order), the
+// subscription event creates+provisions an account via resolveAccount. The
+// checkout event — which carries no client_reference_id in the desktop claim-token
+// flow — must REUSE that account, not mint a fresh one, or the claim binds the
+// desktop to an account whose license belongs to a different one (→ 404
+// license_not_found at pairing).
+func TestCheckoutReusesAccountFromEarlierSubscriptionEvent(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	const nonce = "nonce-abcdef-0123456789"
+
+	// Desktop started checkout: a pending claim keyed by the nonce, no account yet.
+	if err := f.store.CreateCheckoutClaim(ctx, authstore.CheckoutClaim{
+		Nonce: nonce, StripeSessionID: "cs_1", Status: authstore.ClaimPending,
+		CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create claim: %v", err)
+	}
+	f.api.Set(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1))
+
+	// Subscription event first: creates an account + provisions the license.
+	body, sig := f.wh.Event(stripe.EventTypeCustomerSubscriptionCreated,
+		fake.MarshalSubscription(fake.Subscription("sub_1", "cus_1", stripe.SubscriptionStatusActive, 1)))
+	f.deliver(t, body, sig)
+
+	// Checkout completes with NO client_reference_id (claim-token flow).
+	body, sig = f.wh.Event(stripe.EventTypeCheckoutSessionCompleted,
+		fake.CheckoutCompletedWithNonce("cs_1", "cus_1", "sub_1", nonce))
+	f.deliver(t, body, sig)
+
+	lics, _ := f.store.ListLicensesBySubscription(ctx, "sub_1")
+	if len(lics) != 1 {
+		t.Fatalf("want exactly 1 license, got %d", len(lics))
+	}
+	claim, err := f.store.GetCheckoutClaim(ctx, nonce)
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if claim.Status != authstore.ClaimReady {
+		t.Fatalf("claim status = %v, want ready", claim.Status)
+	}
+	// The crux: the account the claim hands the desktop MUST own the license.
+	if claim.AccountID != lics[0].AccountID {
+		t.Fatalf("account mismatch: claim=%s license=%s", claim.AccountID, lics[0].AccountID)
+	}
+	if claim.LicenseID != lics[0].ID {
+		t.Fatalf("license mismatch: claim=%s license=%s", claim.LicenseID, lics[0].ID)
+	}
+}

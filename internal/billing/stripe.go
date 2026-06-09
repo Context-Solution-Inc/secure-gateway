@@ -201,7 +201,17 @@ func (p *Processor) handleCheckoutCompleted(ctx context.Context, ev stripe.Event
 	// this is where customer↔account is linked (PRD §6.4).
 	accountID := cs.ClientReferenceID
 	if accountID == "" {
-		accountID = authstore.NewID("acct")
+		// Claim-token flow (no client_reference_id): REUSE the account already linked
+		// to this Stripe customer if one exists. A customer.subscription.created event
+		// can be processed before this one and will have created+provisioned the account
+		// via resolveAccount; minting a fresh id here would orphan that license under a
+		// different account, so the claim hands the desktop an account whose license_id
+		// belongs to someone else (→ 404 license_not_found at pairing).
+		resolved, rerr := p.resolveAccount(ctx, customerID)
+		if rerr != nil {
+			return fmt.Errorf("resolve account for checkout %s: %w", cs.ID, rerr)
+		}
+		accountID = resolved
 	}
 	if err := p.store.UpsertAccount(ctx, authstore.Account{ID: accountID, StripeCustomerID: customerID, CreatedAt: p.now()}); err != nil {
 		return fmt.Errorf("link account: %w", err)
