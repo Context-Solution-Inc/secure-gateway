@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal library manifest. INTERNET (for the relay WebSocket) is declared by the
+     consuming app (mobile-agent already has it); the library adds no permissions. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
