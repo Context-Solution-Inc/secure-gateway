@@ -26,8 +26,10 @@ class MobileClient internal constructor(private val config: MobileConfig) {
     private val publicKeyB64: String = Base64.getEncoder().encodeToString(identity.publicKey())
 
     private var deviceId: String? = config.deviceId
-    private var pairId: String? = null
-    private var peerPublicKey: ByteArray? = null
+    // Seeded from config to support reconnect-without-repair (the QR's pairing token is
+    // single-use; a restored pairId + desktop public key let connect() run on its own).
+    private var pairId: String? = config.pairId
+    private var peerPublicKey: ByteArray? = config.desktopPublicKeyB64?.let { Base64.getDecoder().decode(it) }
     private var relayUrl: String? = config.relayUrl
 
     private var onMessage: Consumer<ByteArray> = Consumer { }
@@ -87,6 +89,20 @@ class MobileClient internal constructor(private val config: MobileConfig) {
     fun state(): ConnectionState? = client?.state()
 
     fun pairId(): String? = pairId
+
+    fun deviceId(): String? = deviceId
+
+    /** Base64-std of the desktop's X25519 public key learned at [pair] (null before pairing). */
+    fun desktopPublicKeyB64(): String? = peerPublicKey?.let { Base64.getEncoder().encodeToString(it) }
+
+    /**
+     * True once paired — in this process via [pair], or restored from a prior pairing via
+     * [MobileConfig.pairId] + [MobileConfig.desktopPublicKeyB64]. When true, [connect] can run
+     * on its own (no [pair], so no spent-pairing-token 401). Persist [deviceId]/[pairId]/
+     * [desktopPublicKeyB64] after a successful [pair] and feed them back via [MobileConfig] to
+     * reconnect after a toggle/relaunch.
+     */
+    fun isPaired(): Boolean = pairId != null && peerPublicKey != null
 
     /**
      * Revoke this pairing at the gateway (FR-2.5): the relay session is cut and the pair

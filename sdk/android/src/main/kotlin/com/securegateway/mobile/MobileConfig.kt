@@ -24,6 +24,19 @@ class MobileConfig {
     var accountSecret: String? = null
     var relayUrl: String? = null
     var deviceId: String? = null
+
+    /**
+     * Restore a prior pairing so [MobileClient.connect] can run WITHOUT re-[MobileClient.pair]ing.
+     * The QR's pairing token is single-use, so a reconnect (toggle off/on, app relaunch) must
+     * reuse the [deviceId]/[pairId]/[desktopPublicKeyB64] learned at first pair instead of
+     * replaying the spent token. Leave null for a first-time pair. Set all of [deviceId],
+     * [pairId] and [desktopPublicKeyB64] together — [MobileClient.isPaired] gates on the latter two.
+     */
+    var pairId: String? = null
+
+    /** Base64-std of the desktop's raw 32-byte X25519 public key, learned at first pair. See [pairId]. */
+    var desktopPublicKeyB64: String? = null
+
     var keyStore: KeyStore = InMemoryKeyStore()
     var pushWaker: PushWaker = NoopPushWaker()
 
