@@ -4,7 +4,7 @@ Thin Relay Client SDKs for the three platforms (PRD §8), with one common concep
 host apps deal only in plaintext app messages and connection state:
 
 ```
-connect(credentials) · send(bytes) -> ack · onMessage · onStateChange · pair(qr) / generatePairingQr()
+connect(credentials) · send(bytes) -> ack · onMessage · onStateChange · pair(qr) / generatePairingQr() · unpair()
 ```
 
 Each SDK implements FR-1 (reconnect with exponential backoff + full jitter, base 1s/cap 60s;
@@ -81,3 +81,30 @@ When the flag is off, the app keeps its legacy local QR-sync path. The QR payloa
 (`v:1`), so a legacy QR (no `v`) routes to the old behavior (FR-2 backward compatibility). Key
 storage (`KeyStore`) and push-to-wake (`PushWaker`) are injected, so the host supplies the
 platform implementations (Android Keystore/FCM, iOS Keychain/APNs, desktop OS keystore).
+
+## Lifecycle: pairing, reconnect, unpair
+
+The QR's **pairing token is single-use** — it authorizes exactly one `completePairing`. A host
+that re-runs `pair()` / `generatePairingQr()` on every reconnect (toggle off/on, app relaunch)
+replays the spent token and the gateway returns `401 pairing_token_invalid`. So the SDK lets the
+host **pair once and reconnect many**:
+
+- **Mobile** (`MobileClient`): after `pair(qr)`, persist `deviceId()` + `pairId()` +
+  `desktopPublicKeyB64()`. On a later launch, feed them back via `MobileConfig.deviceId` /
+  `pairId` / `desktopPublicKeyB64` and call `connect()` directly — `isPaired()` returns true and
+  no token is replayed. The X25519 identity itself persists via the injected `KeyStore`.
+- **Desktop** (`DesktopClient`): persist `deviceId()` after the first `generatePairingQr()` and
+  restore it via `DesktopConfig.deviceId` next launch. The gateway keys "re-pair" on the desktop
+  **device id**, so reusing it makes a re-mint **reuse the account's `max_pairs` slot + the same
+  `pair_id`** (FR-2.2/2.4) instead of registering a new device and failing `capacity_exceeded`
+  while the prior pairing still holds the slot. Without this the desktop silently can't re-mint a
+  QR after a restart.
+- **`unpair()`** (both): revoke the pairing at the gateway (`POST /v1/pairings/unpair`) — cuts the
+  peer's live session and frees the slot so a new device can pair. No-op before pairing completes;
+  blocking HTTP, so call off the UI thread, then `close()`.
+
+The pairing/token HTTP client (`core` `AuthClient`) uses **`java.net.HttpURLConnection`**, not
+`java.net.http.HttpClient` — the latter is absent on Android (`NoClassDefFoundError` on-device).
+`ConnectionManager.close()` is crash-safe: transport callbacks and `send()` no longer call
+`exec.execute()` after `exec.shutdown()` (which threw `RejectedExecutionException` uncaught on the
+OkHttp thread and crashed the host).
