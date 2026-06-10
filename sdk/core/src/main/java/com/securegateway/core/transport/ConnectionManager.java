@@ -13,6 +13,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -99,23 +100,30 @@ public final class ConnectionManager {
         String id = UUID.randomUUID().toString();
         CompletableFuture<Void> future = new CompletableFuture<>();
         pendingAcks.put(id, future);
-        exec.execute(() -> {
-            PendingSend ps = new PendingSend(id, plaintext.clone(), future);
-            if (terminal || !running) {
-                pendingAcks.remove(id);
-                future.completeExceptionally(new IllegalStateException("session is not active"));
-            } else if (isLiveForData()) {
-                writeData(ps);
-            } else {
-                sendQueue.addLast(ps); // flush once handshake completes
-            }
-        });
+        try {
+            exec.execute(() -> {
+                PendingSend ps = new PendingSend(id, plaintext.clone(), future);
+                if (terminal || !running) {
+                    pendingAcks.remove(id);
+                    future.completeExceptionally(new IllegalStateException("session is not active"));
+                } else if (isLiveForData()) {
+                    writeData(ps);
+                } else {
+                    sendQueue.addLast(ps); // flush once handshake completes
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            // close() already shut the scheduler down — fail the future, don't throw to the
+            // caller (a late send during teardown must not crash the host).
+            pendingAcks.remove(id);
+            future.completeExceptionally(new IllegalStateException("session is not active"));
+        }
         return future;
     }
 
     /** Stop maintaining the connection and release resources. */
     public void close() {
-        exec.execute(() -> {
+        safeExec(() -> {
             running = false;
             cancelTimers();
             if (active != null) {
@@ -127,13 +135,31 @@ public final class ConnectionManager {
         exec.shutdown();
     }
 
+    /**
+     * Submit to the scheduler, dropping the task if it's already shut down. After
+     * {@link #close()} the transport can still fire {@code onClosed}/{@code onError}/late
+     * sends on its own threads; those callbacks must not throw {@link RejectedExecutionException}
+     * (it would be uncaught on the transport thread and crash the host app).
+     */
+    private void safeExec(Runnable r) {
+        try {
+            exec.execute(r);
+        } catch (RejectedExecutionException ignored) {
+            // executor shut down by close(); the late callback is safe to drop.
+        }
+    }
+
     // --- connect loop ---
 
     private void scheduleConnect(long delayMs) {
         if (!running || terminal) {
             return;
         }
-        exec.schedule(this::attemptConnect, delayMs, TimeUnit.MILLISECONDS);
+        try {
+            exec.schedule(this::attemptConnect, delayMs, TimeUnit.MILLISECONDS);
+        } catch (RejectedExecutionException ignored) {
+            // raced with close()'s shutdown; nothing to reconnect to.
+        }
     }
 
     private void attemptConnect() {
@@ -492,12 +518,12 @@ public final class ConnectionManager {
 
         @Override
         public void onOpen() {
-            exec.execute(() -> handleOpen(owner));
+            safeExec(() -> handleOpen(owner));
         }
 
         @Override
         public void onMessage(byte[] data) {
-            exec.execute(() -> handleMessage(data));
+            safeExec(() -> handleMessage(data));
         }
 
         @Override
@@ -507,7 +533,7 @@ public final class ConnectionManager {
 
         @Override
         public void onClosed(int code, String reason) {
-            exec.execute(() -> {
+            safeExec(() -> {
                 if (active == owner || active == null) {
                     handleClosed(code, reason);
                 }
@@ -516,7 +542,7 @@ public final class ConnectionManager {
 
         @Override
         public void onError(Throwable error) {
-            exec.execute(() -> {
+            safeExec(() -> {
                 if (active == owner || active == null) {
                     scheduleReconnect();
                 }

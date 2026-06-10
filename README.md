@@ -251,7 +251,13 @@ gap end to end (used by mobile-agent's "anywhere access" upgrade):
    desktop opens it in the browser.
 2. **Stripe webhook `checkout.session.completed`** provisions the account +
    license (as before) and, when `metadata.nonce` is present, marks the claim
-   **ready** (idempotent under retries).
+   **ready** (idempotent under retries). If a `customer.subscription.created`
+   event arrived **first** (Stripe may deliver it before
+   `checkout.session.completed`), that handler already created+provisioned an
+   account for the customer, so checkout-completion **reuses the customer's
+   existing account** (`resolveAccount`) instead of minting a second one —
+   otherwise the claim binds to an account whose `license_id` belongs to the
+   other, and pairing later fails `404 license_not_found`.
 3. **Stripe `success_url` → `GET /v1/checkout/return`** mints a one-time
    `claim_code`, then 302s the browser to the desktop's loopback callback with it.
    While the webhook is still pending it serves a self-refreshing interstitial.

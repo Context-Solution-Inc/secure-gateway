@@ -57,7 +57,10 @@ public final class DesktopClient {
 
     /** Register the desktop device if needed, then request a pairing token + QR payload. */
     public QrPayload generatePairingQr() {
+        config.logger.accept("qr: auth=" + config.authUrl + " relay=" + config.relayUrl
+                + " secret=" + (config.accountSecret == null || config.accountSecret.isBlank() ? "MISSING" : "present"));
         ensureDevice();
+        config.logger.accept("qr: device registered id=" + deviceId + "; creating pairing token");
         AuthClient.PairingTokenResult r =
                 auth.createPairingToken(config.accountSecret, config.licenseId, deviceId, publicKeyB64);
         this.pairingToken = r.pairingToken;
@@ -65,6 +68,7 @@ public final class DesktopClient {
         // credential the mobile needs to issue tokens (it has no subscription of
         // its own). Not minted by the gateway — it never leaves the QR path.
         r.qr.accountSecret = config.accountSecret;
+        config.logger.accept("qr: ready (pairing token minted); waiting for the phone to scan + pair");
         return r.qr;
     }
 
@@ -76,13 +80,16 @@ public final class DesktopClient {
             if (AuthClient.PollResult.COMPLETED.equals(p.status)) {
                 this.pairId = p.pairId;
                 this.peerPublicKey = Base64.getDecoder().decode(p.mobilePublicKey);
+                config.logger.accept("pair: completed pairId=" + pairId + " peerPubKey=" + peerPublicKey.length + "B");
                 return;
             }
             if (AuthClient.PollResult.EXPIRED.equals(p.status)) {
+                config.logger.accept("pair: token EXPIRED before the phone completed pairing");
                 throw new IllegalStateException("pairing token expired before completion");
             }
             sleep(250);
         }
+        config.logger.accept("pair: timed out waiting for the phone to pair");
         throw new IllegalStateException("timed out awaiting pairing");
     }
 
@@ -91,11 +98,14 @@ public final class DesktopClient {
         if (pairId == null || peerPublicKey == null) {
             throw new IllegalStateException("call generatePairingQr() + awaitPairing() first");
         }
+        config.logger.accept("connect: issuing token for pairId=" + pairId + " device=" + deviceId);
         TokenStore tokens = new TokenStore();
         tokens.update(auth.issueToken(config.accountSecret, deviceId, pairId));
+        config.logger.accept("connect: token issued; opening relay session at " + config.relayUrl
+                + " (wss dial is async — watch for state/wss lines)");
         Credentials cred = new Credentials(
                 config.relayUrl, Role.DESKTOP, identity.privateKey(), peerPublicKey, tokens, auth);
-        client = new RelayClient(cred, JdkWebSocketTransport::new)
+        client = new RelayClient(cred, () -> new JdkWebSocketTransport(config.logger))
                 .onMessage(onMessage)
                 .onStateChange(onStateChange);
         client.connect();
@@ -111,6 +121,32 @@ public final class DesktopClient {
 
     public String pairId() {
         return pairId;
+    }
+
+    /**
+     * The desktop device id — null until {@link #generatePairingQr()} registers it (or it was
+     * supplied via {@link DesktopConfig#deviceId}). Persist it and feed it back through
+     * {@code DesktopConfig.deviceId} on the next launch so a re-mint reuses the SAME device:
+     * the gateway then treats it as a re-pair (reusing the max_pairs slot, FR-2.2) instead of
+     * registering a new device and rejecting the pairing token with {@code capacity_exceeded}.
+     */
+    public String deviceId() {
+        return deviceId;
+    }
+
+    /**
+     * Revoke this pairing at the gateway (FR-2.5): the phone's relay session is cut and the
+     * pair slot freed. No-op if pairing never completed. Call {@link #close()} afterward to
+     * drop the local session. Blocking HTTP — call off the UI thread.
+     */
+    public void unpair() {
+        if (pairId == null) {
+            return;
+        }
+        config.logger.accept("unpair: revoking pairId=" + pairId);
+        auth.unpair(config.accountSecret, pairId);
+        pairId = null;
+        peerPublicKey = null;
     }
 
     public void close() {

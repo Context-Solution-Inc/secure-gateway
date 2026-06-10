@@ -18,6 +18,13 @@ public final class DesktopConfig {
     public String deviceId;        // nullable: auto-register if absent
     public KeyStore keyStore;
 
+    /**
+     * Optional diagnostics sink for pairing/connect/wss progress + errors (mirrors
+     * {@code MobileConfig.logger}). The host wires this to its log; defaults to a no-op so
+     * normal runs and the e2e tests stay quiet.
+     */
+    public java.util.function.Consumer<String> logger = s -> { };
+
     public DesktopConfig() {
     }
 
