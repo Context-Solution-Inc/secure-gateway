@@ -124,6 +124,17 @@ public final class DesktopClient {
     }
 
     /**
+     * The desktop device id — null until {@link #generatePairingQr()} registers it (or it was
+     * supplied via {@link DesktopConfig#deviceId}). Persist it and feed it back through
+     * {@code DesktopConfig.deviceId} on the next launch so a re-mint reuses the SAME device:
+     * the gateway then treats it as a re-pair (reusing the max_pairs slot, FR-2.2) instead of
+     * registering a new device and rejecting the pairing token with {@code capacity_exceeded}.
+     */
+    public String deviceId() {
+        return deviceId;
+    }
+
+    /**
      * Revoke this pairing at the gateway (FR-2.5): the phone's relay session is cut and the
      * pair slot freed. No-op if pairing never completed. Call {@link #close()} afterward to
      * drop the local session. Blocking HTTP — call off the UI thread.
