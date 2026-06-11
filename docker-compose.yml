@@ -6,6 +6,8 @@
 # signs with the private key; it also serves the public JWKS):
 #
 #   go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
+#   chmod 0755 keys && chmod 0644 keys/relay.key.json
+#   docker compose up --build
 #
 # Then exercise the lifecycle by sending Stripe test webhooks to
 # http://localhost:8080/v1/webhooks/stripe (e.g. via `stripe listen`), or use
@@ -61,9 +63,15 @@ services:
       AUTH_DB_DSN: "postgres://auth:authpass@postgres:5432/auth?sslmode=disable"
       AUTH_BACKPLANE: "redis"
       AUTH_REDIS_ADDR: "redis:6379"
+      AUTH_PUBLIC_URL: "http://192.168.1.103:8080"
+      AUTH_RELAY_URL: "ws://192.168.1.103:8443/v1/connect"
       # Set these to your Stripe test-mode values to drive a real lifecycle:
-      AUTH_STRIPE_WEBHOOK_SECRET: "whsec_replace_me"
-      # AUTH_STRIPE_SECRET_KEY: "sk_test_..."   # enables nightly reconciliation
+      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
+      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
+      # Desktop subscription onboarding (claim-token flow). Empty price id ⇒
+      # POST /v1/checkout/start is disabled (503); see deploy/compose/.env.example.
+      AUTH_STRIPE_PRICE_ID: "${AUTH_STRIPE_PRICE_ID:-}"
+      AUTH_CLAIM_TTL: 30m
       AUTH_ADMIN_KEY: "dev_admin_key"
       AUTH_LOG_FORMAT: "json"
     volumes:
@@ -96,8 +104,9 @@ services:
       RELAY_JWT_AUDIENCE: "relay"
       # Verify tokens via the auth service's JWKS (production path) rather than a
       # static public key file.
-      RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"
+      RELAY_JWKS_URL: "http://192.168.1.103:8080/.well-known/jwks.json"
       RELAY_BACKPLANE: "redis"
+      RELAY_JWT_ALGS: "ES256"
       RELAY_REDIS_ADDR: "redis:6379"
       RELAY_LOG_FORMAT: "json"
       # No TLS cert set: the relay serves plain HTTP, intended to sit behind a
