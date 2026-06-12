@@ -11,9 +11,9 @@ LDFLAGS     := -s -w \
   -X $(PKG)/internal/version.BuildDate=$(BUILD_DATE)
 
 # Registry for `make push` (image-based prod deploy). Override per release, e.g.:
-#   make push IMAGE_REGISTRY=registry.example.com/secure-gateway VERSION=1.0.0
+#   make push IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway VERSION=1.0.0
 # VERSION is the image tag; it maps to IMAGE_TAG in deploy/compose/.env.
-IMAGE_REGISTRY ?= registry.example.com/secure-gateway
+IMAGE_REGISTRY ?= ghcr.io/lley154/secure-gateway
 
 # Full soak overrides, e.g.: make soak SOAK_CONNS=10000 SOAK_DURATION=24h
 SOAK_CONNS    ?= 1000

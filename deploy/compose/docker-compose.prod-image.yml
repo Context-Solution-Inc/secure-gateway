@@ -4,18 +4,15 @@
 # push versioned, digest-pinned images, then deploy the exact artifact here.
 #
 #   # --- on the secure builder (has the Go toolchain + repo source) ---
-#   export IMAGE_REGISTRY=registry.example.com/secure-gateway IMAGE_TAG=1.4.2
-#   docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
-#   docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
-#   docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG
-#   docker push $IMAGE_REGISTRY/auth:$IMAGE_TAG
+#   docker login ghcr.io                      # PAT with write:packages
+#   make push VERSION=1.4.2                    # builds + pushes ghcr.io/lley154/secure-gateway/{relay,auth}:1.4.2
 #   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
 #
 #   # --- on the VPS (no toolchain, no repo source needed) ---
 #   cd deploy/compose
 #   cp .env.example .env                      # fill in real values incl. IMAGE_REGISTRY/IMAGE_TAG
 #   mkdir -p keys                             # copy keys/relay.key.json here (see README)
-#   docker login registry.example.com         # registry READ credential only
+#   docker login ghcr.io                       # registry READ credential only (PAT with read:packages)
 #   docker compose -f docker-compose.prod-image.yml pull
 #   docker compose -f docker-compose.prod-image.yml up -d   # NOTE: no --build
 #

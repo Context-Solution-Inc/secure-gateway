@@ -707,15 +707,16 @@ The `push` Make target builds both registry-tagged images and pushes them (here
 `VERSION` is the image tag, i.e. `IMAGE_TAG` in `.env`):
 
 ```sh
-docker login registry.example.com                          # push credential
-make push IMAGE_REGISTRY=registry.example.com/secure-gateway VERSION=1.0.0
+docker login ghcr.io                                       # push credential (a PAT with write:packages)
+make push VERSION=1.0.0                                     # defaults to IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway
 ```
 
-It refuses the placeholder registry and the `dev`/`latest` tags so prod always
-gets a real, immutable artifact. Equivalent to the raw commands:
+It refuses the `dev`/`latest` tags so prod always gets a real, immutable
+artifact. Override `IMAGE_REGISTRY=…` for a different registry. Equivalent to the
+raw commands:
 
 ```sh
-export IMAGE_REGISTRY=registry.example.com/secure-gateway IMAGE_TAG=1.0.0
+export IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway IMAGE_TAG=1.0.0
 docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
 docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
 docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG
@@ -749,7 +750,7 @@ rotate via JWKS ≤ 90 days (PRD §10.2).
 ```sh
 cd deploy/compose
 cp .env.example .env          # fill in real values, incl. IMAGE_REGISTRY / IMAGE_TAG
-docker login registry.example.com                          # registry READ credential
+docker login ghcr.io                                       # registry READ credential (a PAT with read:packages)
 docker compose -f docker-compose.prod-image.yml pull
 docker compose -f docker-compose.prod-image.yml up -d
 docker compose -f docker-compose.prod-image.yml ps
