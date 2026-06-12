@@ -1,0 +1,164 @@
+# Production single-VPS deployment, IMAGE-based (PRD §9.2). Identical to
+# docker-compose.prod.yml except the relay/auth images are PULLED from a
+# registry instead of built on the box. Build elsewhere (a secure builder),
+# push versioned, digest-pinned images, then deploy the exact artifact here.
+#
+#   # --- on the secure builder (has the Go toolchain + repo source) ---
+#   export IMAGE_REGISTRY=registry.example.com/secure-gateway IMAGE_TAG=1.4.2
+#   docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
+#   docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
+#   docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG
+#   docker push $IMAGE_REGISTRY/auth:$IMAGE_TAG
+#   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
+#
+#   # --- on the VPS (no toolchain, no repo source needed) ---
+#   cd deploy/compose
+#   cp .env.example .env                      # fill in real values incl. IMAGE_REGISTRY/IMAGE_TAG
+#   mkdir -p keys                             # copy keys/relay.key.json here (see README)
+#   docker login registry.example.com         # registry READ credential only
+#   docker compose -f docker-compose.prod-image.yml pull
+#   docker compose -f docker-compose.prod-image.yml up -d   # NOTE: no --build
+#
+# The signing key (keys/relay.key.json) is a RUNTIME secret mounted as a volume
+# below — it is NEVER baked into an image, so the registry images are not
+# sensitive. See the README "Deployment → Production (VPS) → Build off-box".
+#
+# Caddy terminates TLS (auto Let's Encrypt) and is the ONLY service that
+# publishes ports (80/443). relay/auth/redis/postgres stay on the internal
+# network.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - relay
+      - auth
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "${REDIS_PASSWORD}"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: auth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: auth
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auth"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    security_opt:
+      - no-new-privileges:true
+
+  auth:
+    # Built and pushed from a secure builder; pulled here. Pin a real tag (or a
+    # @sha256 digest) via IMAGE_TAG in .env — never deploy :latest to prod.
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/auth:${IMAGE_TAG:?set IMAGE_TAG in .env}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      AUTH_LISTEN_ADDR: ":8080"
+      AUTH_JWT_ISSUER: "${JWT_ISSUER}"
+      AUTH_JWT_AUDIENCE: "relay"
+      AUTH_JWT_ALG: "ES256"
+      AUTH_JWT_KID: "auth-1"
+      AUTH_JWT_SIGNING_KEY_FILE: "/keys/relay.key.json"
+      AUTH_STORE: "postgres"
+      AUTH_DB_DSN: "postgres://auth:${POSTGRES_PASSWORD}@postgres:5432/auth?sslmode=disable"
+      AUTH_BACKPLANE: "redis"
+      AUTH_REDIS_ADDR: "redis:6379"
+      AUTH_REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
+      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
+      # Desktop subscription onboarding (claim-token flow). Empty price id ⇒
+      # POST /v1/checkout/start is disabled (503); see deploy/compose/.env.example.
+      AUTH_STRIPE_PRICE_ID: "${AUTH_STRIPE_PRICE_ID:-}"
+      AUTH_CLAIM_TTL: "${AUTH_CLAIM_TTL:-30m}"
+      AUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY}"
+      AUTH_PUBLIC_URL: "https://${AUTH_HOST}"
+      AUTH_RELAY_URL: "wss://${RELAY_HOST}/v1/connect"
+      # Caddy sets X-Forwarded-For; trust it so rate limiting keys on the client IP.
+      AUTH_TRUST_PROXY: "true"
+      AUTH_LOG_FORMAT: "json"
+    volumes:
+      # Mounted signing key must be readable by the container's uid 65532
+      # (distroless nonroot). Keep it private — chown to that uid rather than
+      # world-reading it:
+      #   sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
+      - ./keys:/keys:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  relay:
+    # Built and pushed from a secure builder; pulled here. Pin a real tag (or a
+    # @sha256 digest) via IMAGE_TAG in .env — never deploy :latest to prod.
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/relay:${IMAGE_TAG:?set IMAGE_TAG in .env}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth:
+        condition: service_started
+    environment:
+      RELAY_LISTEN_ADDR: ":8443"
+      RELAY_JWT_ISSUER: "${JWT_ISSUER}"
+      RELAY_JWT_AUDIENCE: "relay"
+      RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"
+      RELAY_BACKPLANE: "redis"
+      RELAY_REDIS_ADDR: "redis:6379"
+      RELAY_REDIS_PASSWORD: "${REDIS_PASSWORD}"
+      RELAY_TRUST_PROXY: "true"
+      RELAY_LOG_FORMAT: "json"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+    # Network-namespaced TCP tuning (host-level knobs live in docs/tuning.md).
+    sysctls:
+      net.core.somaxconn: "65535"
+      net.ipv4.tcp_max_syn_backlog: "65535"
+      net.ipv4.ip_local_port_range: "1024 65535"
+      net.ipv4.tcp_tw_reuse: "1"
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

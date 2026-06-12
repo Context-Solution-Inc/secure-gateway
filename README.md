@@ -594,6 +594,31 @@ kernel/ulimit tuning so the box can hold many connections (full rationale and
 values in [`docs/tuning.md`](./docs/tuning.md)):
 
 ```sh
+### docker prep ###
+sudo apt update
+sudo apt -y install ca-certificates curl gnupg
+
+# GPG key
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Repo — arch auto-detected, codename from os-release (no lsb_release dependency)
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt -y install docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin
+
+sudo usermod -aG docker $USER
+newgrp docker
+docker run hello-world
+
+### system tuning ###
 sudo tee /etc/sysctl.d/90-relay.conf >/dev/null <<'EOF'
 fs.file-max = 2097152
 net.core.somaxconn = 65535
@@ -658,6 +683,81 @@ curl -fsS -X POST https://auth.example.com/v1/accounts \
   -H "Authorization: Bearer $AUTH_ADMIN_KEY" \
   -d '{"account_id":"acct_123"}'
 ```
+
+#### Build off-box (recommended for production)
+
+Steps 4–5 above build the relay/auth images **on the VPS** (`up -d --build`). That
+is the simplest path, but it drags the Go toolchain, the full repo source, and
+build caches onto the production box, and a build competes with live traffic for
+the 2 vCPU / 4 GB. For a hardened deployment, build the images on a separate
+**secure builder**, push a versioned, digest-pinned artifact, and have the VPS
+only ever pull and run it. Use
+[`docker-compose.prod-image.yml`](./deploy/compose/docker-compose.prod-image.yml),
+which is identical to `docker-compose.prod.yml` except `relay`/`auth` reference
+`image:` instead of `build:`.
+
+The signing key story is **unchanged**: `keys/relay.key.json` is a runtime secret
+mounted as a read-only volume (`./keys:/keys:ro`) — it is never `COPY`'d into a
+Dockerfile, so the registry images carry no secret and the key never reaches the
+builder. The only *new* secrets are the registry credentials (give the builder
+**push**, the VPS **read-only** — not the same credential).
+
+**1. Build & push** (on the secure builder, which has the toolchain + source).
+The `push` Make target builds both registry-tagged images and pushes them (here
+`VERSION` is the image tag, i.e. `IMAGE_TAG` in `.env`):
+
+```sh
+docker login registry.example.com                          # push credential
+make push IMAGE_REGISTRY=registry.example.com/secure-gateway VERSION=1.0.0
+```
+
+It refuses the placeholder registry and the `dev`/`latest` tags so prod always
+gets a real, immutable artifact. Equivalent to the raw commands:
+
+```sh
+export IMAGE_REGISTRY=registry.example.com/secure-gateway IMAGE_TAG=1.0.0
+docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
+docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
+docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG
+docker push $IMAGE_REGISTRY/auth:$IMAGE_TAG
+```
+
+If the builder and VPS differ in CPU architecture, build for the VPS's arch with
+`docker buildx build --platform linux/amd64 ...`. Optionally `cosign sign` the
+images here and `cosign verify` on the VPS so it only runs artifacts you built
+(the cosign private key stays on the builder; only its public key goes to the VPS).
+
+*No registry?* Ship a tarball over SSH instead of pushing/pulling:
+`docker save $IMAGE_REGISTRY/relay:$IMAGE_TAG $IMAGE_REGISTRY/auth:$IMAGE_TAG | gzip | ssh deploy@vps 'gunzip | docker load'` — then skip the `login`/`pull` below and go straight to `up -d`.
+
+**2. Get the signing key onto the VPS** (generate on the builder, copy over SSH —
+this avoids needing the Go toolchain on the VPS just to run `devtoken`):
+
+```sh
+# on the builder (one time)
+go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
+scp keys/relay.key.json deploy@vps:/srv/secure-gateway/deploy/compose/keys/
+# on the VPS — lock it down to the distroless uid 65532 (see step 3 above)
+sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
+```
+
+Back the key up off-box (encrypted): losing it invalidates every issued token;
+rotate via JWKS ≤ 90 days (PRD §10.2).
+
+**3. Deploy** (on the VPS — no toolchain, no repo build, no `--build`):
+
+```sh
+cd deploy/compose
+cp .env.example .env          # fill in real values, incl. IMAGE_REGISTRY / IMAGE_TAG
+docker login registry.example.com                          # registry READ credential
+docker compose -f docker-compose.prod-image.yml pull
+docker compose -f docker-compose.prod-image.yml up -d
+docker compose -f docker-compose.prod-image.yml ps
+```
+
+Upgrades and rollbacks are then a one-line image swap: bump `IMAGE_TAG` in `.env`,
+`pull`, and `up -d` (or set it back to the previous tag to roll back). Verify over
+HTTPS and configure Stripe exactly as in steps 5–7 above.
 
 #### TLS without a reverse proxy (alternative)
 
