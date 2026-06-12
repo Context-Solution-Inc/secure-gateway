@@ -693,12 +693,34 @@ curl -fsS https://relay.example.com/healthz && echo
 curl -fsS https://auth.example.com/.well-known/jwks.json | head -c 80; echo
 ```
 
-**6. Stripe** — in the Stripe dashboard add a webhook endpoint
-`https://auth.example.com/v1/webhooks/stripe` for the subscription/invoice events
-(PRD §6.4), copy its signing secret into `.env` as `AUTH_STRIPE_WEBHOOK_SECRET`,
-and `docker compose -f docker-compose.prod.yml up -d auth` to apply. Licenses are
-provisioned only by signed webhooks; the nightly reconciliation (needs
-`AUTH_STRIPE_SECRET_KEY`) heals any missed ones.
+**6. Stripe** — in the Stripe dashboard (**Live mode** — production uses live
+keys/secrets), under *Developers → Webhooks → Add endpoint*, set the URL to
+`https://auth.example.com/v1/webhooks/stripe` and subscribe to **exactly these six
+events** (the only ones the handler acts on; any others are logged no-ops):
+
+```
+checkout.session.completed     # link customer↔account, provision licenses, ready the claim token
+customer.subscription.created  # sync subscription state + provisioning
+customer.subscription.updated  # same upsert path
+customer.subscription.deleted  # mark canceled, revoke all licenses
+invoice.payment_failed         # enter grace period (past_due + grace deadline)
+invoice.paid                   # clear grace, reactivate suspended licenses
+```
+
+Reveal the endpoint's signing secret and put it in `.env` as
+`AUTH_STRIPE_WEBHOOK_SECRET=whsec_…` (**required** — every webhook is
+signature-verified; a missing/test-mode secret yields `400 bad_signature`). Also
+set `AUTH_STRIPE_SECRET_KEY=sk_live_…` so the nightly reconciliation can heal any
+missed or out-of-order webhooks by re-reading subscriptions from Stripe. All
+three (endpoint, `whsec_`, `sk_`) must be from the **same mode** — live for prod.
+Then `docker compose -f docker-compose.prod.yml up -d auth` to apply, and use the
+dashboard's *Send test event* to confirm a `200`.
+
+Licenses are provisioned **only** by signed webhooks (plus reconciliation
+healing), not the admin endpoint. The handler is idempotent (duplicate redeliveries
+return `200 {"duplicate":true}`) and never wedges Stripe's retries (processing
+failures still return `200 {"queued":true}` and retry internally), so no extra
+Stripe-side retry config is needed.
 
 **7. Provision an account** — once Stripe drives subscriptions this is automatic;
 to create an account credential manually use the admin key:
