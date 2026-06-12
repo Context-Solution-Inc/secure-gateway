@@ -63,8 +63,8 @@ services:
       AUTH_DB_DSN: "postgres://auth:authpass@postgres:5432/auth?sslmode=disable"
       AUTH_BACKPLANE: "redis"
       AUTH_REDIS_ADDR: "redis:6379"
-      AUTH_PUBLIC_URL: "http://192.168.1.103:8080"
-      AUTH_RELAY_URL: "ws://192.168.1.103:8443/v1/connect"
+      AUTH_PUBLIC_URL: "http://${LOCAL_IP_ADDR}:8080"
+      AUTH_RELAY_URL: "ws://${LOCAL_IP_ADDR}:8443/v1/connect"
       # Set these to your Stripe test-mode values to drive a real lifecycle:
       AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
       AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
@@ -104,7 +104,7 @@ services:
       RELAY_JWT_AUDIENCE: "relay"
       # Verify tokens via the auth service's JWKS (production path) rather than a
       # static public key file.
-      RELAY_JWKS_URL: "http://192.168.1.103:8080/.well-known/jwks.json"
+      RELAY_JWKS_URL: "http://${LOCAL_IP_ADDR}:8080/.well-known/jwks.json"
       RELAY_BACKPLANE: "redis"
       RELAY_JWT_ALGS: "ES256"
       RELAY_REDIS_ADDR: "redis:6379"

@@ -1,15 +1,33 @@
-# Production single-VPS deployment (PRD §9.2). Self-contained: run from THIS
-# directory so the build context (../..) is the repo root and the relative
-# volumes (./keys, ./Caddyfile, ./.env) resolve here.
+# Production single-VPS deployment, IMAGE-based (PRD §9.2). Identical to
+# docker-compose.prod.yml except the relay/auth images are PULLED from a
+# registry instead of built on the box. Build elsewhere (a secure builder),
+# push versioned, digest-pinned images, then deploy the exact artifact here.
 #
-#   cd deploy/compose
-#   cp .env.example .env            # fill in real values
-#   mkdir -p keys && go run ../../cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
-#   docker compose -f docker-compose.prod.yml up -d --build
+#   # --- on the secure builder (has the Go toolchain + repo source) ---
+#   docker login ghcr.io                      # PAT with write:packages
+#   make push VERSION=1.4.2                    # builds + pushes ghcr.io/lley154/secure-gateway/{relay,auth}:1.4.2
+#   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
+#
+#   # --- on the VPS: ONLY 4 files needed, in one directory ---
+#   #   docker-compose.prod-image.yml   (this file)
+#   #   Caddyfile                       (reverse-proxy / TLS config)
+#   #   .env                            (secrets + IMAGE_REGISTRY/IMAGE_TAG; you create it)
+#   #   keys/relay.key.json             (JWT signing key)
+#   # No repo source/Dockerfiles/Makefile on the VPS; pgdata & caddy_* are
+#   # Docker-managed named volumes, not host files. The relative mounts below
+#   # resolve against THIS directory, so always run compose from here.
+#   cd ~/secure-gateway
+#   docker login ghcr.io                       # registry READ credential only (PAT with read:packages)
+#   docker compose -f docker-compose.prod-image.yml pull
+#   docker compose -f docker-compose.prod-image.yml up -d   # NOTE: no --build
+#
+# The signing key (keys/relay.key.json) is a RUNTIME secret mounted as a volume
+# below — it is NEVER baked into an image, so the registry images are not
+# sensitive. See the README "Deployment → Production (VPS) → Build off-box".
 #
 # Caddy terminates TLS (auto Let's Encrypt) and is the ONLY service that
 # publishes ports (80/443). relay/auth/redis/postgres stay on the internal
-# network. See the README "Deployment → Production (VPS)" section.
+# network.
 
 services:
   caddy:
@@ -69,11 +87,9 @@ services:
       - no-new-privileges:true
 
   auth:
-    build:
-      context: ../..
-      dockerfile: Dockerfile.auth
-      args:
-        VERSION: prod
+    # Built and pushed from a secure builder; pulled here. Pin a real tag (or a
+    # @sha256 digest) via IMAGE_TAG in .env — never deploy :latest to prod.
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/auth:${IMAGE_TAG:?set IMAGE_TAG in .env}
     restart: unless-stopped
     depends_on:
       redis:
@@ -116,11 +132,9 @@ services:
       - no-new-privileges:true
 
   relay:
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-      args:
-        VERSION: prod
+    # Built and pushed from a secure builder; pulled here. Pin a real tag (or a
+    # @sha256 digest) via IMAGE_TAG in .env — never deploy :latest to prod.
+    image: ${IMAGE_REGISTRY:?set IMAGE_REGISTRY in .env}/relay:${IMAGE_TAG:?set IMAGE_TAG in .env}
     restart: unless-stopped
     depends_on:
       redis:

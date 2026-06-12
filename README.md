@@ -594,6 +594,31 @@ kernel/ulimit tuning so the box can hold many connections (full rationale and
 values in [`docs/tuning.md`](./docs/tuning.md)):
 
 ```sh
+### docker prep ###
+sudo apt update
+sudo apt -y install ca-certificates curl gnupg
+
+# GPG key
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+# Repo — arch auto-detected, codename from os-release (no lsb_release dependency)
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+  https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt update
+sudo apt -y install docker-ce docker-ce-cli containerd.io \
+  docker-buildx-plugin docker-compose-plugin
+
+sudo usermod -aG docker $USER
+newgrp docker
+docker run hello-world
+
+### system tuning ###
 sudo tee /etc/sysctl.d/90-relay.conf >/dev/null <<'EOF'
 fs.file-max = 2097152
 net.core.somaxconn = 65535
@@ -606,8 +631,33 @@ EOF
 sudo sysctl --system
 ```
 
-Open only **80/443** at the firewall; Redis and Postgres stay on the internal
-Docker network and must not be exposed.
+**Open inbound 80 + 443 — at *both* the cloud firewall and the host firewall.**
+Caddy needs them reachable from the public internet to get TLS certificates:
+
+| Port | Proto | Why |
+|------|-------|-----|
+| 80   | TCP   | **Required** for the ACME HTTP-01 challenge — the CA fetches `http://<host>/.well-known/acme-challenge/…` over plain HTTP. Caddy redirects 80→443 for real traffic *after* a cert is issued, but issuance fails without it. |
+| 443  | TCP   | HTTPS (the actual relay/auth traffic). |
+| 443  | UDP   | HTTP/3 (the `443:443/udp` mapping). Optional for issuance; matches the compose. |
+
+```sh
+# Host firewall (skip rules that already exist):
+sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp
+
+# On a cloud VM (AWS EC2 / GCP / Azure) you ALSO must open these in the provider's
+# security group / firewall — the host firewall alone is not enough. AWS example:
+aws ec2 authorize-security-group-ingress --group-id sg-XXXX --ip-permissions \
+  IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges='[{CidrIp=0.0.0.0/0}]' \
+  IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges='[{CidrIp=0.0.0.0/0}]' \
+  IpProtocol=udp,FromPort=443,ToPort=443,IpRanges='[{CidrIp=0.0.0.0/0}]'
+```
+
+Verify from a machine **outside** the VPS before launching — `nc -zv <public-ip> 80`
+should connect, not time out. A `Timeout during connect (likely firewall problem)`
+in the Caddy ACME logs means port 80 is still blocked upstream (usually the cloud
+security group). Note Let's Encrypt rate-limits failed attempts (~5/hour per
+hostname), so fix the firewall before retrying. Open **only** 80/443 — Redis and
+Postgres stay on the internal Docker network and must never be exposed.
 
 **3. Secrets & signing key** — from the repo on the VPS:
 
@@ -643,12 +693,34 @@ curl -fsS https://relay.example.com/healthz && echo
 curl -fsS https://auth.example.com/.well-known/jwks.json | head -c 80; echo
 ```
 
-**6. Stripe** — in the Stripe dashboard add a webhook endpoint
-`https://auth.example.com/v1/webhooks/stripe` for the subscription/invoice events
-(PRD §6.4), copy its signing secret into `.env` as `AUTH_STRIPE_WEBHOOK_SECRET`,
-and `docker compose -f docker-compose.prod.yml up -d auth` to apply. Licenses are
-provisioned only by signed webhooks; the nightly reconciliation (needs
-`AUTH_STRIPE_SECRET_KEY`) heals any missed ones.
+**6. Stripe** — in the Stripe dashboard (**Live mode** — production uses live
+keys/secrets), under *Developers → Webhooks → Add endpoint*, set the URL to
+`https://auth.example.com/v1/webhooks/stripe` and subscribe to **exactly these six
+events** (the only ones the handler acts on; any others are logged no-ops):
+
+```
+checkout.session.completed     # link customer↔account, provision licenses, ready the claim token
+customer.subscription.created  # sync subscription state + provisioning
+customer.subscription.updated  # same upsert path
+customer.subscription.deleted  # mark canceled, revoke all licenses
+invoice.payment_failed         # enter grace period (past_due + grace deadline)
+invoice.paid                   # clear grace, reactivate suspended licenses
+```
+
+Reveal the endpoint's signing secret and put it in `.env` as
+`AUTH_STRIPE_WEBHOOK_SECRET=whsec_…` (**required** — every webhook is
+signature-verified; a missing/test-mode secret yields `400 bad_signature`). Also
+set `AUTH_STRIPE_SECRET_KEY=sk_live_…` so the nightly reconciliation can heal any
+missed or out-of-order webhooks by re-reading subscriptions from Stripe. All
+three (endpoint, `whsec_`, `sk_`) must be from the **same mode** — live for prod.
+Then `docker compose -f docker-compose.prod.yml up -d auth` to apply, and use the
+dashboard's *Send test event* to confirm a `200`.
+
+Licenses are provisioned **only** by signed webhooks (plus reconciliation
+healing), not the admin endpoint. The handler is idempotent (duplicate redeliveries
+return `200 {"duplicate":true}`) and never wedges Stripe's retries (processing
+failures still return `200 {"queued":true}` and retry internally), so no extra
+Stripe-side retry config is needed.
 
 **7. Provision an account** — once Stripe drives subscriptions this is automatic;
 to create an account credential manually use the admin key:
@@ -658,6 +730,151 @@ curl -fsS -X POST https://auth.example.com/v1/accounts \
   -H "Authorization: Bearer $AUTH_ADMIN_KEY" \
   -d '{"account_id":"acct_123"}'
 ```
+
+#### Build off-box (recommended for production)
+
+Steps 4–5 above build the relay/auth images **on the VPS** (`up -d --build`). That
+is the simplest path, but it drags the Go toolchain, the full repo source, and
+build caches onto the production box, and a build competes with live traffic for
+the 2 vCPU / 4 GB. For a hardened deployment, build the images on a separate
+**secure builder**, push a versioned, digest-pinned artifact, and have the VPS
+only ever pull and run it. Use
+[`docker-compose.prod-image.yml`](./deploy/compose/docker-compose.prod-image.yml),
+which is identical to `docker-compose.prod.yml` except `relay`/`auth` reference
+`image:` instead of `build:`.
+
+The signing key story is **unchanged**: `keys/relay.key.json` is a runtime secret
+mounted as a read-only volume (`./keys:/keys:ro`) — it is never `COPY`'d into a
+Dockerfile, so the registry images carry no secret and the key never reaches the
+builder. The only *new* secrets are the registry credentials (give the builder
+**push**, the VPS **read-only** — not the same credential).
+
+**1. Build & push** (on the secure builder, which has the toolchain + source).
+The `push` Make target builds both registry-tagged images and pushes them (here
+`VERSION` is the image tag, i.e. `IMAGE_TAG` in `.env`):
+
+```sh
+docker login ghcr.io                                       # push credential (a PAT with write:packages)
+make push VERSION=1.0.0                                     # defaults to IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway
+```
+
+It refuses the `dev`/`latest` tags so prod always gets a real, immutable
+artifact. Override `IMAGE_REGISTRY=…` for a different registry. Equivalent to the
+raw commands:
+
+```sh
+export IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway IMAGE_TAG=1.0.0
+docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
+docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
+docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG
+docker push $IMAGE_REGISTRY/auth:$IMAGE_TAG
+```
+
+If the builder and VPS differ in CPU architecture, build for the VPS's arch with
+`docker buildx build --platform linux/amd64 ...`. Optionally `cosign sign` the
+images here and `cosign verify` on the VPS so it only runs artifacts you built
+(the cosign private key stays on the builder; only its public key goes to the VPS).
+
+> **GHCR auth & visibility.** `docker login ghcr.io` uses your GitHub username
+> and a **Personal Access Token (classic)** as the password — `write:packages`
+> on the builder, `read:packages` on the VPS — *not* your GitHub password.
+> First push creates the `relay`/`auth` packages **private** and initially
+> unlinked from the repo. In each package's GitHub settings: link it to the
+> `secure-gateway` repo (so repo collaborators inherit access), and under
+> *Manage Actions access / Package settings* add the VPS's pull identity. Keep
+> them **private** — these images aren't sensitive (the signing key is never
+> baked in), but there's no reason to publish them. If you make a package
+> public, `read:packages` is no longer needed to pull it (anonymous pull works),
+> but the VPS still needs login to pull a private one.
+
+*No registry?* Ship a tarball over SSH instead of pushing/pulling:
+`docker save $IMAGE_REGISTRY/relay:$IMAGE_TAG $IMAGE_REGISTRY/auth:$IMAGE_TAG | gzip | ssh deploy@vps 'gunzip | docker load'` — then skip the `login`/`pull` below and go straight to `up -d`.
+
+**2. Get the signing key onto the VPS** (generate on the builder, copy over SSH —
+this avoids needing the Go toolchain on the VPS just to run `devtoken`):
+
+```sh
+# on the builder (one time)
+go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
+ssh ubuntu@vps 'mkdir -p ~/secure-gateway/keys'
+scp keys/relay.key.json ubuntu@vps:~/secure-gateway/keys/
+# on the VPS — lock it down to the distroless uid 65532
+ssh ubuntu@vps 'cd ~/secure-gateway && sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json'
+```
+
+Back the key up off-box (encrypted): losing it invalidates every issued token;
+rotate via JWKS ≤ 90 days (PRD §10.2).
+
+**3. Deploy** (on the VPS — no toolchain, no repo source, no `--build`). The VPS
+needs **only these four files**, all in one directory, because the compose file
+mounts the rest by *relative* path (`env_file: .env`, `./Caddyfile`, `./keys`):
+
+```
+~/secure-gateway/
+├── docker-compose.prod-image.yml   # the compose file
+├── Caddyfile                       # reverse-proxy / TLS config
+├── .env                            # secrets + IMAGE_REGISTRY / IMAGE_TAG (gitignored; you create it)
+└── keys/
+    └── relay.key.json              # JWT signing key (from step 2)
+```
+
+Nothing else from the repo belongs on the VPS — not the source, the Dockerfiles,
+the Makefile, nor the other compose files. The `pgdata`/`caddy_data`/`caddy_config`
+volumes are Docker-managed (created automatically), not host files. Copy just the
+two config files from the repo (the key is already there from step 2):
+
+```sh
+# from the repo on your builder/laptop — copy ONLY these two
+scp deploy/compose/docker-compose.prod-image.yml deploy/compose/Caddyfile \
+    ubuntu@vps:~/secure-gateway/
+
+# then on the VPS, in that directory
+cd ~/secure-gateway
+# create .env from the template (deploy/compose/.env.example) and fill in real
+# values incl. IMAGE_REGISTRY / IMAGE_TAG — the file itself is all you need, not a repo:
+nano .env
+ls Caddyfile keys/relay.key.json   # confirm the mounted paths exist as FILES before up
+docker login ghcr.io                                       # registry READ credential (a PAT with read:packages)
+docker compose -f docker-compose.prod-image.yml pull
+docker compose -f docker-compose.prod-image.yml up -d
+docker compose -f docker-compose.prod-image.yml ps
+```
+
+> Run `up` only from the directory holding those files. If a mounted path is
+> missing, Docker silently creates it as an empty **directory** and the container
+> then dies with `not a directory: Are you trying to mount a directory onto a
+> file`. Fix: `down`, `rmdir` the stray directory, put the real file there, `up -d`.
+
+Upgrades and rollbacks are then a one-line image swap: bump `IMAGE_TAG` in `.env`,
+`pull`, and `up -d` (or set it back to the previous tag to roll back). Verify over
+HTTPS and configure Stripe exactly as in steps 5–7 above.
+
+##### Troubleshooting
+
+- **`redis ... setpriv: setresuid failed: Operation not permitted` / `dependency
+  redis failed to start`** — the Redis image's root entrypoint tries to drop to
+  the `redis` user with `setpriv`, which needs `CAP_SETUID`; our `cap_drop:[ALL]`
+  removes it. The compose files pin `user: redis` on the service so it starts
+  unprivileged and skips the drop. If you hit this, you're on an older copy of
+  the compose file — pull the latest, or add `user: redis` to the `redis`
+  service yourself. (Postgres is unaffected: it keeps default capabilities.)
+- **`error mounting ".../Caddyfile" ... not a directory: Are you trying to mount
+  a directory onto a file`** — the host path the compose file mounts (`./Caddyfile`,
+  and likewise `./keys`/`.env`) didn't exist when you ran `up`, so Docker created
+  it as an empty directory and then couldn't mount it onto the image's file. You
+  ran from a directory missing the config bundle. Fix:
+  ```sh
+  docker compose -f docker-compose.prod-image.yml down
+  sudo rmdir Caddyfile           # remove the stray empty directory
+  # put the real Caddyfile (and .env, keys/) next to the compose file — see step 3
+  docker compose -f docker-compose.prod-image.yml up -d
+  ```
+- **Caddy ACME `Timeout during connect (likely firewall problem)` / no
+  certificate** — DNS resolves to your box, but the CA can't reach port 80 for
+  the HTTP-01 challenge. Open inbound 80/443 at **both** the host firewall and
+  the cloud security group (see VPS prep step 2); on EC2 it's almost always the
+  security group. Verify with `nc -zv <public-ip> 80` from outside the VPS. Fix
+  the firewall before retrying — Let's Encrypt rate-limits failed attempts.
 
 #### TLS without a reverse proxy (alternative)
 
