@@ -772,6 +772,16 @@ Upgrades and rollbacks are then a one-line image swap: bump `IMAGE_TAG` in `.env
 `pull`, and `up -d` (or set it back to the previous tag to roll back). Verify over
 HTTPS and configure Stripe exactly as in steps 5–7 above.
 
+##### Troubleshooting
+
+- **`redis ... setpriv: setresuid failed: Operation not permitted` / `dependency
+  redis failed to start`** — the Redis image's root entrypoint tries to drop to
+  the `redis` user with `setpriv`, which needs `CAP_SETUID`; our `cap_drop:[ALL]`
+  removes it. The compose files pin `user: redis` on the service so it starts
+  unprivileged and skips the drop. If you hit this, you're on an older copy of
+  the compose file — pull the latest, or add `user: redis` to the `redis`
+  service yourself. (Postgres is unaffected: it keeps default capabilities.)
+
 #### TLS without a reverse proxy (alternative)
 
 To terminate TLS directly at the relay/auth instead of Caddy, mount certificates

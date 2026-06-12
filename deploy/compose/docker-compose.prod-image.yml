@@ -48,6 +48,12 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    # Start as the unprivileged redis user (uid 999) directly. cap_drop:[ALL]
+    # removes CAP_SETUID, so the image's root entrypoint can't setpriv-drop to
+    # the redis user (setresuid → "Operation not permitted"); running as that
+    # user from the start sidesteps the drop. Safe because persistence is off
+    # (no /data to chown). See README "Build off-box → troubleshooting".
+    user: redis
     command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "${REDIS_PASSWORD}"]
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
