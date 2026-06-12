@@ -728,6 +728,18 @@ If the builder and VPS differ in CPU architecture, build for the VPS's arch with
 images here and `cosign verify` on the VPS so it only runs artifacts you built
 (the cosign private key stays on the builder; only its public key goes to the VPS).
 
+> **GHCR auth & visibility.** `docker login ghcr.io` uses your GitHub username
+> and a **Personal Access Token (classic)** as the password — `write:packages`
+> on the builder, `read:packages` on the VPS — *not* your GitHub password.
+> First push creates the `relay`/`auth` packages **private** and initially
+> unlinked from the repo. In each package's GitHub settings: link it to the
+> `secure-gateway` repo (so repo collaborators inherit access), and under
+> *Manage Actions access / Package settings* add the VPS's pull identity. Keep
+> them **private** — these images aren't sensitive (the signing key is never
+> baked in), but there's no reason to publish them. If you make a package
+> public, `read:packages` is no longer needed to pull it (anonymous pull works),
+> but the VPS still needs login to pull a private one.
+
 *No registry?* Ship a tarball over SSH instead of pushing/pulling:
 `docker save $IMAGE_REGISTRY/relay:$IMAGE_TAG $IMAGE_REGISTRY/auth:$IMAGE_TAG | gzip | ssh deploy@vps 'gunzip | docker load'` — then skip the `login`/`pull` below and go straight to `up -d`.
 
