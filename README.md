@@ -749,24 +749,54 @@ this avoids needing the Go toolchain on the VPS just to run `devtoken`):
 ```sh
 # on the builder (one time)
 go run ./cmd/devtoken -gen-keys -out-dir ./keys -alg ES256
-scp keys/relay.key.json deploy@vps:/srv/secure-gateway/deploy/compose/keys/
-# on the VPS — lock it down to the distroless uid 65532 (see step 3 above)
-sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json
+ssh ubuntu@vps 'mkdir -p ~/secure-gateway/keys'
+scp keys/relay.key.json ubuntu@vps:~/secure-gateway/keys/
+# on the VPS — lock it down to the distroless uid 65532
+ssh ubuntu@vps 'cd ~/secure-gateway && sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/relay.key.json'
 ```
 
 Back the key up off-box (encrypted): losing it invalidates every issued token;
 rotate via JWKS ≤ 90 days (PRD §10.2).
 
-**3. Deploy** (on the VPS — no toolchain, no repo build, no `--build`):
+**3. Deploy** (on the VPS — no toolchain, no repo source, no `--build`). The VPS
+needs **only these four files**, all in one directory, because the compose file
+mounts the rest by *relative* path (`env_file: .env`, `./Caddyfile`, `./keys`):
+
+```
+~/secure-gateway/
+├── docker-compose.prod-image.yml   # the compose file
+├── Caddyfile                       # reverse-proxy / TLS config
+├── .env                            # secrets + IMAGE_REGISTRY / IMAGE_TAG (gitignored; you create it)
+└── keys/
+    └── relay.key.json              # JWT signing key (from step 2)
+```
+
+Nothing else from the repo belongs on the VPS — not the source, the Dockerfiles,
+the Makefile, nor the other compose files. The `pgdata`/`caddy_data`/`caddy_config`
+volumes are Docker-managed (created automatically), not host files. Copy just the
+two config files from the repo (the key is already there from step 2):
 
 ```sh
-cd deploy/compose
-cp .env.example .env          # fill in real values, incl. IMAGE_REGISTRY / IMAGE_TAG
+# from the repo on your builder/laptop — copy ONLY these two
+scp deploy/compose/docker-compose.prod-image.yml deploy/compose/Caddyfile \
+    ubuntu@vps:~/secure-gateway/
+
+# then on the VPS, in that directory
+cd ~/secure-gateway
+# create .env from the template (deploy/compose/.env.example) and fill in real
+# values incl. IMAGE_REGISTRY / IMAGE_TAG — the file itself is all you need, not a repo:
+nano .env
+ls Caddyfile keys/relay.key.json   # confirm the mounted paths exist as FILES before up
 docker login ghcr.io                                       # registry READ credential (a PAT with read:packages)
 docker compose -f docker-compose.prod-image.yml pull
 docker compose -f docker-compose.prod-image.yml up -d
 docker compose -f docker-compose.prod-image.yml ps
 ```
+
+> Run `up` only from the directory holding those files. If a mounted path is
+> missing, Docker silently creates it as an empty **directory** and the container
+> then dies with `not a directory: Are you trying to mount a directory onto a
+> file`. Fix: `down`, `rmdir` the stray directory, put the real file there, `up -d`.
 
 Upgrades and rollbacks are then a one-line image swap: bump `IMAGE_TAG` in `.env`,
 `pull`, and `up -d` (or set it back to the previous tag to roll back). Verify over
@@ -781,6 +811,17 @@ HTTPS and configure Stripe exactly as in steps 5–7 above.
   unprivileged and skips the drop. If you hit this, you're on an older copy of
   the compose file — pull the latest, or add `user: redis` to the `redis`
   service yourself. (Postgres is unaffected: it keeps default capabilities.)
+- **`error mounting ".../Caddyfile" ... not a directory: Are you trying to mount
+  a directory onto a file`** — the host path the compose file mounts (`./Caddyfile`,
+  and likewise `./keys`/`.env`) didn't exist when you ran `up`, so Docker created
+  it as an empty directory and then couldn't mount it onto the image's file. You
+  ran from a directory missing the config bundle. Fix:
+  ```sh
+  docker compose -f docker-compose.prod-image.yml down
+  sudo rmdir Caddyfile           # remove the stray empty directory
+  # put the real Caddyfile (and .env, keys/) next to the compose file — see step 3
+  docker compose -f docker-compose.prod-image.yml up -d
+  ```
 
 #### TLS without a reverse proxy (alternative)
 

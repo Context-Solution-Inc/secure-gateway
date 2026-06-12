@@ -8,10 +8,15 @@
 #   make push VERSION=1.4.2                    # builds + pushes ghcr.io/lley154/secure-gateway/{relay,auth}:1.4.2
 #   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
 #
-#   # --- on the VPS (no toolchain, no repo source needed) ---
-#   cd deploy/compose
-#   cp .env.example .env                      # fill in real values incl. IMAGE_REGISTRY/IMAGE_TAG
-#   mkdir -p keys                             # copy keys/relay.key.json here (see README)
+#   # --- on the VPS: ONLY 4 files needed, in one directory ---
+#   #   docker-compose.prod-image.yml   (this file)
+#   #   Caddyfile                       (reverse-proxy / TLS config)
+#   #   .env                            (secrets + IMAGE_REGISTRY/IMAGE_TAG; you create it)
+#   #   keys/relay.key.json             (JWT signing key)
+#   # No repo source/Dockerfiles/Makefile on the VPS; pgdata & caddy_* are
+#   # Docker-managed named volumes, not host files. The relative mounts below
+#   # resolve against THIS directory, so always run compose from here.
+#   cd ~/secure-gateway
 #   docker login ghcr.io                       # registry READ credential only (PAT with read:packages)
 #   docker compose -f docker-compose.prod-image.yml pull
 #   docker compose -f docker-compose.prod-image.yml up -d   # NOTE: no --build
