@@ -631,8 +631,33 @@ EOF
 sudo sysctl --system
 ```
 
-Open only **80/443** at the firewall; Redis and Postgres stay on the internal
-Docker network and must not be exposed.
+**Open inbound 80 + 443 — at *both* the cloud firewall and the host firewall.**
+Caddy needs them reachable from the public internet to get TLS certificates:
+
+| Port | Proto | Why |
+|------|-------|-----|
+| 80   | TCP   | **Required** for the ACME HTTP-01 challenge — the CA fetches `http://<host>/.well-known/acme-challenge/…` over plain HTTP. Caddy redirects 80→443 for real traffic *after* a cert is issued, but issuance fails without it. |
+| 443  | TCP   | HTTPS (the actual relay/auth traffic). |
+| 443  | UDP   | HTTP/3 (the `443:443/udp` mapping). Optional for issuance; matches the compose. |
+
+```sh
+# Host firewall (skip rules that already exist):
+sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp
+
+# On a cloud VM (AWS EC2 / GCP / Azure) you ALSO must open these in the provider's
+# security group / firewall — the host firewall alone is not enough. AWS example:
+aws ec2 authorize-security-group-ingress --group-id sg-XXXX --ip-permissions \
+  IpProtocol=tcp,FromPort=80,ToPort=80,IpRanges='[{CidrIp=0.0.0.0/0}]' \
+  IpProtocol=tcp,FromPort=443,ToPort=443,IpRanges='[{CidrIp=0.0.0.0/0}]' \
+  IpProtocol=udp,FromPort=443,ToPort=443,IpRanges='[{CidrIp=0.0.0.0/0}]'
+```
+
+Verify from a machine **outside** the VPS before launching — `nc -zv <public-ip> 80`
+should connect, not time out. A `Timeout during connect (likely firewall problem)`
+in the Caddy ACME logs means port 80 is still blocked upstream (usually the cloud
+security group). Note Let's Encrypt rate-limits failed attempts (~5/hour per
+hostname), so fix the firewall before retrying. Open **only** 80/443 — Redis and
+Postgres stay on the internal Docker network and must never be exposed.
 
 **3. Secrets & signing key** — from the repo on the VPS:
 
@@ -822,6 +847,12 @@ HTTPS and configure Stripe exactly as in steps 5–7 above.
   # put the real Caddyfile (and .env, keys/) next to the compose file — see step 3
   docker compose -f docker-compose.prod-image.yml up -d
   ```
+- **Caddy ACME `Timeout during connect (likely firewall problem)` / no
+  certificate** — DNS resolves to your box, but the CA can't reach port 80 for
+  the HTTP-01 challenge. Open inbound 80/443 at **both** the host firewall and
+  the cloud security group (see VPS prep step 2); on EC2 it's almost always the
+  security group. Verify with `nc -zv <public-ip> 80` from outside the VPS. Fix
+  the firewall before retrying — Let's Encrypt rate-limits failed attempts.
 
 #### TLS without a reverse proxy (alternative)
 
