@@ -94,13 +94,19 @@ func (h *Hub) Deregister(ctx context.Context, s *session.Session) {
 	key := slotKey(s)
 	// Only delete if this exact session is the current holder; a superseded
 	// session must not remove the winner's entry.
-	h.local.CompareAndDelete(key, s)
+	wasHolder := h.local.CompareAndDelete(key, s)
 	_ = h.bp.ReleaseSlot(ctx, key, s.ID)
 	h.metrics.ConnsActive.WithLabelValues(string(s.Claims.Role)).Dec()
 
-	// Tell a locally-connected peer we went offline.
-	if v, ok := h.local.Load(peerKey(s)); ok {
-		v.(*session.Session).SendSys(protocol.SysPeerOffline, "")
+	// Tell a locally-connected peer we went offline — but ONLY if we were still
+	// the live holder. When the phone reconnects on a new network its new session
+	// registers (announcing peer_online) and supersedes this one; this superseded
+	// session's deferred deregister must not then clobber the peer back to
+	// PEER_OFFLINE while the winner is alive and routing (status stuck DOWN bug).
+	if wasHolder {
+		if v, ok := h.local.Load(peerKey(s)); ok {
+			v.(*session.Session).SendSys(protocol.SysPeerOffline, "")
+		}
 	}
 	s.Log().Info("session deregistered", logging.FieldCloseCode, int(s.CloseCode()))
 }
