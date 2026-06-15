@@ -19,6 +19,21 @@ public final class DesktopConfig {
     public KeyStore keyStore;
 
     /**
+     * Restore a prior pairing so {@link DesktopClient#connect()} can run WITHOUT re-pairing
+     * (no fresh {@link DesktopClient#generatePairingQr()}/{@link DesktopClient#awaitPairing}).
+     * The QR's pairing token is single-use, so a reconnect (desktop restart) must reuse the
+     * {@code deviceId}/{@code pairId}/{@code mobilePublicKeyB64} learned at first pairing instead
+     * of minting a new token (which rotates the QR and forces the phone to re-scan). Leave null
+     * for a first-time pairing. Set all of {@code deviceId}, {@code pairId} and
+     * {@code mobilePublicKeyB64} together — {@link DesktopClient#isPaired()} gates on the latter two.
+     * Mirrors {@code MobileConfig.pairId}/{@code MobileConfig.desktopPublicKeyB64}.
+     */
+    public String pairId;
+
+    /** Base64-std of the mobile's raw 32-byte X25519 public key, learned at first pairing. See {@link #pairId}. */
+    public String mobilePublicKeyB64;
+
+    /**
      * Optional diagnostics sink for pairing/connect/wss progress + errors (mirrors
      * {@code MobileConfig.logger}). The host wires this to its log; defaults to a no-op so
      * normal runs and the e2e tests stay quiet.
