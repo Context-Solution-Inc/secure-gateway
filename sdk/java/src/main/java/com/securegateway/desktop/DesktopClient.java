@@ -43,6 +43,12 @@ public final class DesktopClient {
         this.identity = config.keyStore.loadOrCreateIdentity();
         this.publicKeyB64 = Base64.getEncoder().encodeToString(identity.publicKey());
         this.deviceId = config.deviceId;
+        // Seed restore state to support reconnect-without-repair (the QR's pairing token is
+        // single-use; a restored pairId + mobile public key let connect() run on its own).
+        // Mirrors MobileClient's config-seeded pairId/peerPublicKey.
+        this.pairId = config.pairId;
+        this.peerPublicKey = config.mobilePublicKeyB64 == null
+                ? null : Base64.getDecoder().decode(config.mobilePublicKeyB64);
     }
 
     public DesktopClient onMessage(Consumer<byte[]> handler) {
@@ -121,6 +127,23 @@ public final class DesktopClient {
 
     public String pairId() {
         return pairId;
+    }
+
+    /** Base64-std of the mobile peer's X25519 public key learned at {@link #awaitPairing} (null before pairing). */
+    public String mobilePublicKeyB64() {
+        return peerPublicKey == null ? null : Base64.getEncoder().encodeToString(peerPublicKey);
+    }
+
+    /**
+     * True once paired — in this process via {@link #generatePairingQr()} + {@link #awaitPairing},
+     * or restored from a prior pairing via {@link DesktopConfig#pairId} +
+     * {@link DesktopConfig#mobilePublicKeyB64}. When true, {@link #connect()} can run on its own
+     * (no QR mint / no {@link #awaitPairing}). Persist {@link #deviceId()}/{@link #pairId()}/
+     * {@link #mobilePublicKeyB64()} after a successful pairing and feed them back via
+     * {@link DesktopConfig} to reconnect after a restart. Mirrors {@code MobileClient.isPaired()}.
+     */
+    public boolean isPaired() {
+        return pairId != null && peerPublicKey != null;
     }
 
     /**
