@@ -53,8 +53,15 @@ data:
   AUTH_RATELIMIT_ACCOUNT_PER_MIN: "30"
   # Public base URL — the checkout success_url base + billing-portal return URL.
   AUTH_PUBLIC_URL: "https://auth.example.com"
-  # Desktop subscription onboarding (claim-token flow). Set AUTH_STRIPE_PRICE_ID
-  # to enable POST /v1/checkout/start (needs the Stripe secret key in the Secret +
-  # the Customer portal enabled in the Stripe dashboard). Empty ⇒ disabled (503).
+  # Stripe is all-or-none: AUTH_STRIPE_PRICE_ID (here) plus the webhook secret and
+  # secret key (in the Secret) must all be set together to enable billing, or all
+  # be empty with AUTH_BILLING_DISABLED="true" to run ungated. A partial set is
+  # rejected at startup, so leaving this empty while the Secret carries the other
+  # two will fail loudly rather than silently disable subscription gating.
   AUTH_STRIPE_PRICE_ID: ""
+  # Explicit acknowledgement to boot with no Stripe config. When "true" (and no
+  # AUTH_STRIPE_* set) the gateway auto-provisions an open license on account
+  # creation and does not gate secure links; /v1/webhooks/stripe + /v1/checkout/start
+  # return 503.
+  AUTH_BILLING_DISABLED: "false"
   AUTH_CLAIM_TTL: "30m"

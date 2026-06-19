@@ -228,11 +228,17 @@ AUTH_JWT_ISSUER=https://auth.example.com \
 AUTH_JWT_SIGNING_KEY_FILE=./keys/relay.key.json \
 AUTH_STORE=memory \
 AUTH_BACKPLANE=memory \
-AUTH_STRIPE_WEBHOOK_SECRET=whsec_test \
+AUTH_BILLING_DISABLED=true \
 AUTH_ADMIN_KEY=dev_admin_key \
 AUTH_LISTEN_ADDR=127.0.0.1:8080 \
   ./bin/auth
 ```
+
+The example above runs **without Stripe** (`AUTH_BILLING_DISABLED=true`): secure
+links are ungated and `POST /v1/accounts` returns an auto-provisioned `license_id`.
+To exercise the real billing path instead, drop that flag and set all three
+`AUTH_STRIPE_*` vars plus `AUTH_PUBLIC_URL` (see
+[Billing modes](#billing-modes-stripe-enabled-vs-disabled)).
 
 Point the relay at its JWKS with `RELAY_JWKS_URL=http://127.0.0.1:8080/.well-known/jwks.json`
 (use the shared Redis backplane on both so revocations propagate). `docker
@@ -279,9 +285,9 @@ page (the desktop already has its credential) — it is not treated as expired.
 the portal once in the Stripe dashboard (test: Settings → Billing → Customer
 portal), or the call returns `502 stripe_error`.
 
-Requires `AUTH_STRIPE_PRICE_ID` (the plan's price), `AUTH_STRIPE_SECRET_KEY`, and
-`AUTH_PUBLIC_URL` (the `success_url` base); without `AUTH_STRIPE_PRICE_ID`,
-`/v1/checkout/start` returns `503 checkout_unavailable`. Security: the redirect is
+Requires Stripe to be enabled — the `AUTH_STRIPE_*` trio plus `AUTH_PUBLIC_URL`
+(the `success_url` base); see [Billing modes](#billing-modes-stripe-enabled-vs-disabled).
+When Stripe is disabled, `/v1/checkout/start` returns `503 checkout_unavailable`. Security: the redirect is
 validated **loopback-only** so a `claim_code` can never be delivered to a remote
 host; the claim is single-use with a short TTL (`AUTH_CLAIM_TTL`, default 30m);
 the `nonce` binds start→webhook→return and `/return` checks `session_id`.
@@ -323,10 +329,11 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 | `AUTH_TOKEN_TTL` | `10m` | connection JWT lifetime |
 | `AUTH_REFRESH_TTL` | `720h` | refresh token lifetime |
 | `AUTH_GRACE_PERIOD` | `168h` | `past_due` grace window (PRD default 7 days) |
-| `AUTH_STRIPE_WEBHOOK_SECRET` | — | webhook signature secret (required) |
-| `AUTH_STRIPE_SECRET_KEY` | — | Stripe API key; enables nightly reconciliation + desktop checkout |
-| `AUTH_STRIPE_PRICE_ID` | — | subscription plan price; enables `POST /v1/checkout/start` (requires `AUTH_PUBLIC_URL` + `AUTH_STRIPE_SECRET_KEY`) |
-| `AUTH_PUBLIC_URL` | — | this service's public base URL; the checkout `success_url`/`return` base |
+| `AUTH_STRIPE_WEBHOOK_SECRET` | — | webhook signature secret; part of the all-or-none Stripe trio (see below) |
+| `AUTH_STRIPE_SECRET_KEY` | — | Stripe API key (nightly reconciliation + desktop checkout); part of the trio |
+| `AUTH_STRIPE_PRICE_ID` | — | subscription plan price; enables `POST /v1/checkout/start`; part of the trio |
+| `AUTH_BILLING_DISABLED` | `false` | explicit acknowledgement required to boot with no Stripe config; runs ungated (see below) |
+| `AUTH_PUBLIC_URL` | — | this service's public base URL; the checkout `success_url`/`return` base (required when Stripe enabled) |
 | `AUTH_CLAIM_TTL` | `30m` | one-time checkout-claim lifetime (desktop onboarding) |
 | `AUTH_RECONCILE_INTERVAL` | `24h` | reconciliation cadence |
 | `AUTH_ADMIN_KEY` | — | gates `POST /v1/accounts`; empty ⇒ disabled |
@@ -337,6 +344,21 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 | `AUTH_RATELIMIT_ACCOUNT_PER_MIN` / `AUTH_RATELIMIT_ACCOUNT_BURST` | `30` / `10` | per-account auth-attempt limit |
 | `AUTH_LOG_LEVEL` / `AUTH_LOG_FORMAT` | `info` / `json` | logging |
 | `AUTH_INSTANCE_ID` | auto | overrideable instance identity |
+
+### Billing modes (Stripe enabled vs. disabled)
+
+The three `AUTH_STRIPE_*` credentials are an **all-or-none** unit, validated at
+startup so an accidental omission can never silently leave secure links ungated:
+
+| `AUTH_STRIPE_WEBHOOK_SECRET` / `_SECRET_KEY` / `_PRICE_ID` | `AUTH_BILLING_DISABLED` | Result |
+|---|---|---|
+| all three set | (ignored) | **Stripe enabled** — secure links gated on a valid subscription (also requires `AUTH_PUBLIC_URL`) |
+| none set | `true` | **Stripe disabled** — secure links ungated; an open license is auto-provisioned on `POST /v1/accounts` (returns `license_id`). A loud warning is logged at startup |
+| none set | unset/`false` | **startup error** — refuses to boot |
+| some set, some missing | (any) | **startup error** — names the missing var(s) |
+
+In disabled mode `POST /v1/webhooks/stripe` and `POST /v1/checkout/start` return
+`503`.
 
 ## Client SDKs (M4)
 
@@ -420,7 +442,7 @@ AUTH_LISTEN_ADDR=127.0.0.1:8080 \
 AUTH_STORE=memory AUTH_BACKPLANE=memory \
 AUTH_JWT_ISSUER=https://auth.example.com \
 AUTH_JWT_SIGNING_KEY_FILE=./keys/relay.key.json \
-AUTH_STRIPE_WEBHOOK_SECRET=whsec_dev \
+AUTH_BILLING_DISABLED=true \
 AUTH_ADMIN_KEY=admin-e2e-key \
 AUTH_DEV_SEED=acct_e2e,lic_e2e,sub_e2e \
 AUTH_RELAY_URL=ws://127.0.0.1:8443/v1/connect \
@@ -708,10 +730,13 @@ invoice.paid                   # clear grace, reactivate suspended licenses
 ```
 
 Reveal the endpoint's signing secret and put it in `.env` as
-`AUTH_STRIPE_WEBHOOK_SECRET=whsec_…` (**required** — every webhook is
-signature-verified; a missing/test-mode secret yields `400 bad_signature`). Also
-set `AUTH_STRIPE_SECRET_KEY=sk_live_…` so the nightly reconciliation can heal any
-missed or out-of-order webhooks by re-reading subscriptions from Stripe. All
+`AUTH_STRIPE_WEBHOOK_SECRET=whsec_…` (every webhook is signature-verified; a
+missing/test-mode secret yields `400 bad_signature`). Also set
+`AUTH_STRIPE_SECRET_KEY=sk_live_…` so the nightly reconciliation can heal any
+missed or out-of-order webhooks by re-reading subscriptions from Stripe, and
+`AUTH_STRIPE_PRICE_ID=price_…` for the desktop plan — these three are an
+all-or-none unit (see [Billing modes](#billing-modes-stripe-enabled-vs-disabled);
+to run without Stripe, set none of them and `AUTH_BILLING_DISABLED=true`). All
 three (endpoint, `whsec_`, `sk_`) must be from the **same mode** — live for prod.
 Then `docker compose -f docker-compose.prod.yml up -d auth` to apply, and use the
 dashboard's *Send test event* to confirm a `200`.

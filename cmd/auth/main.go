@@ -54,6 +54,9 @@ func run() error {
 
 	log := logging.New(os.Stdout, cfg.LogLevel, cfg.LogFormat)
 	log.Info("starting auth service", "version", version.String(), "instance_id", cfg.InstanceID)
+	if !cfg.StripeEnabled {
+		log.Warn("BILLING DISABLED — Stripe is not configured; secure links are NOT gated on a subscription and open licenses are auto-provisioned (AUTH_BILLING_DISABLED=true)")
+	}
 
 	m := authmetrics.New()
 
@@ -100,6 +103,7 @@ func run() error {
 		Grace: cfg.GracePeriod, AdminKey: cfg.AdminKey,
 		RelayURL: cfg.RelayURL, AuthURL: cfg.PublicURL,
 		CheckoutPriceID: cfg.StripePriceID, ClaimTTL: cfg.ClaimTTL,
+		BillingEnabled: cfg.StripeEnabled,
 	})
 
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{

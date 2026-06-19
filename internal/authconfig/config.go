@@ -72,11 +72,20 @@ type Config struct {
 	// credential for an account; when empty the endpoint is disabled.
 	AdminKey string // AUTH_ADMIN_KEY
 
-	// Stripe
-	StripeSecretKey     string        // AUTH_STRIPE_SECRET_KEY (for reconciliation API)
-	StripeWebhookSecret string        // AUTH_STRIPE_WEBHOOK_SECRET (required)
+	// Stripe. The three credential vars below are an all-or-none unit: set all
+	// three to enable billing, or none (with BillingDisabled=true) to run the
+	// gateway with secure links ungated. Any partial combination is rejected at
+	// load so an accidental omission can never silently disable gating.
+	StripeSecretKey     string        // AUTH_STRIPE_SECRET_KEY (reconciliation + checkout API)
+	StripeWebhookSecret string        // AUTH_STRIPE_WEBHOOK_SECRET (subscription webhooks)
 	StripePriceID       string        // AUTH_STRIPE_PRICE_ID (desktop subscription plan; enables /checkout/start)
 	ReconcileInterval   time.Duration // AUTH_RECONCILE_INTERVAL (nightly heal)
+
+	// BillingDisabled (AUTH_BILLING_DISABLED) is the explicit acknowledgement
+	// required to boot with no Stripe configuration. StripeEnabled is the
+	// resolved verdict: true iff all three Stripe credentials are present.
+	BillingDisabled bool
+	StripeEnabled   bool
 
 	// Desktop subscription onboarding (claim-token flow).
 	ClaimTTL time.Duration // AUTH_CLAIM_TTL (one-time checkout-claim lifetime; default 30m)
@@ -138,6 +147,7 @@ func loadFrom(getenv getenvFn) (*Config, error) {
 
 	c.TrustProxy = boolean(getenv, "AUTH_TRUST_PROXY", false, &errs)
 	c.RateLimitEnabled = boolean(getenv, "AUTH_RATELIMIT_ENABLED", true, &errs)
+	c.BillingDisabled = boolean(getenv, "AUTH_BILLING_DISABLED", false, &errs)
 
 	var err error
 	if c.RedisDB, err = integer(getenv, "AUTH_REDIS_DB", 0); err != nil {
@@ -199,18 +209,27 @@ func (c *Config) validate() error {
 	default:
 		errs = append(errs, fmt.Errorf("AUTH_JWT_ALG must be ES256 or EdDSA, got %q", c.JWTAlg))
 	}
-	if c.StripeWebhookSecret == "" {
-		errs = append(errs, errors.New("AUTH_STRIPE_WEBHOOK_SECRET is required"))
-	}
-	// The desktop checkout flow needs both the price id and a public URL (the
-	// Stripe success_url base, /v1/checkout/return) and the outbound Stripe API.
-	if c.StripePriceID != "" {
+	// Stripe is all-or-none. The three credentials enable billing together; with
+	// none set the gateway may run ungated only when the operator explicitly
+	// acknowledges it via AUTH_BILLING_DISABLED=true. Any partial combination is
+	// a configuration error so dropping a single var (e.g. AUTH_STRIPE_PRICE_ID)
+	// fails loudly instead of silently disabling subscription gating.
+	switch n := stripeVarsSet(c); n {
+	case 3:
+		c.StripeEnabled = true
+		// The desktop checkout flow needs a public URL (the Stripe success_url
+		// base, /v1/checkout/return).
 		if c.PublicURL == "" {
-			errs = append(errs, errors.New("AUTH_PUBLIC_URL is required when AUTH_STRIPE_PRICE_ID is set"))
+			errs = append(errs, errors.New("AUTH_PUBLIC_URL is required when Stripe is enabled"))
 		}
-		if c.StripeSecretKey == "" {
-			errs = append(errs, errors.New("AUTH_STRIPE_SECRET_KEY is required when AUTH_STRIPE_PRICE_ID is set"))
+	case 0:
+		c.StripeEnabled = false
+		if !c.BillingDisabled {
+			errs = append(errs, errors.New("Stripe is not configured: set AUTH_STRIPE_WEBHOOK_SECRET, AUTH_STRIPE_SECRET_KEY and AUTH_STRIPE_PRICE_ID, or set AUTH_BILLING_DISABLED=true to run the gateway without billing (secure links ungated)"))
 		}
+	default:
+		c.StripeEnabled = false
+		errs = append(errs, fmt.Errorf("incomplete Stripe configuration: set all three of AUTH_STRIPE_WEBHOOK_SECRET, AUTH_STRIPE_SECRET_KEY, AUTH_STRIPE_PRICE_ID (or none with AUTH_BILLING_DISABLED=true); missing: %s", strings.Join(missingStripeVars(c), ", ")))
 	}
 
 	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
@@ -273,6 +292,34 @@ func (c *Config) validate() error {
 	}
 
 	return errors.Join(errs...)
+}
+
+// stripeVarsSet counts how many of the three all-or-none Stripe credentials are
+// present (webhook secret, secret key, price id).
+func stripeVarsSet(c *Config) int {
+	n := 0
+	for _, v := range []string{c.StripeWebhookSecret, c.StripeSecretKey, c.StripePriceID} {
+		if v != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// missingStripeVars names the Stripe credentials that are absent, for a precise
+// error on a partial configuration.
+func missingStripeVars(c *Config) []string {
+	var missing []string
+	if c.StripeWebhookSecret == "" {
+		missing = append(missing, "AUTH_STRIPE_WEBHOOK_SECRET")
+	}
+	if c.StripeSecretKey == "" {
+		missing = append(missing, "AUTH_STRIPE_SECRET_KEY")
+	}
+	if c.StripePriceID == "" {
+		missing = append(missing, "AUTH_STRIPE_PRICE_ID")
+	}
+	return missing
 }
 
 // --- small env helpers (mirrors internal/config) ---
