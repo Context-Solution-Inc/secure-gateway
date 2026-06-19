@@ -1,4 +1,4 @@
-# secure-gateway
+# Secure Gateway
 
 **Secure Device Relay** — a subscription-gated WebSocket relay that lets a mobile
 app reach its paired desktop app from anywhere, even behind NAT or a firewall.
