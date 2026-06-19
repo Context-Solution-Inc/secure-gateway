@@ -4,7 +4,7 @@ Component-level reference for the Secure Device Relay: what each service does,
 the code layout, the HTTP APIs, billing modes, the desktop onboarding flow, and
 the WebSocket close codes. For the high-level overview and quick start see the
 [README](../README.md); the full requirements live in the
-[PRD](../prd-secure-mobile-desktop-relay.md).
+[PRD](./prd-secure-mobile-desktop-relay.md).
 
 ## Milestones
 

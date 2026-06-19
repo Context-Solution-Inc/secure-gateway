@@ -94,7 +94,7 @@ Docker, see the [build book](./docs/BUILD.md). Tear down with
 | [Contributing](./CONTRIBUTING.md) | Development workflow and pre-push checks |
 | [Capacity](./docs/capacity.md) / [Tuning](./docs/tuning.md) | §10.1 targets + load-test procedure; host kernel/TCP tuning |
 | [SDK guide](./sdk/README.md) | Client SDK internals and per-platform notes |
-| [PRD](./prd-secure-mobile-desktop-relay.md) | Full product requirements |
+| [PRD](./docs/prd-secure-mobile-desktop-relay.md) | Full product requirements |
 
 ## License
 
