@@ -60,8 +60,9 @@ data:
   # two will fail loudly rather than silently disable subscription gating.
   AUTH_STRIPE_PRICE_ID: ""
   # Explicit acknowledgement to boot with no Stripe config. When "true" (and no
-  # AUTH_STRIPE_* set) the gateway auto-provisions an open license on account
-  # creation and does not gate secure links; /v1/webhooks/stripe + /v1/checkout/start
-  # return 503.
+  # AUTH_STRIPE_* set) the gateway auto-provisions an open license and does not
+  # gate secure links; the desktop upgrade flow still works (/v1/checkout/start
+  # auto-creates the account + returns a claim_code). Only /v1/webhooks/stripe
+  # returns 503.
   AUTH_BILLING_DISABLED: "false"
   AUTH_CLAIM_TTL: "30m"

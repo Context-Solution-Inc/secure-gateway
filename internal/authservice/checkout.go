@@ -11,6 +11,7 @@ import (
 	"github.com/lley154/secure-gateway/internal/authstore"
 	"github.com/lley154/secure-gateway/internal/billing"
 	"github.com/lley154/secure-gateway/internal/license"
+	"github.com/lley154/secure-gateway/internal/logging"
 )
 
 // Desktop subscription onboarding (claim-token flow). The desktop has no account
@@ -62,6 +63,14 @@ type startCheckoutResp struct {
 }
 
 func (s *Service) handleStartCheckout(w http.ResponseWriter, r *http.Request) {
+	// Billing disabled: there is no Stripe checkout, but the desktop upgrade flow
+	// is identical from the client's side. Auto-provision an account + open
+	// license and hand back a claim_code the desktop can redeem immediately, so
+	// the client never needs to know whether Stripe is on or off.
+	if !s.billingEnabled {
+		s.startCheckoutOpen(w, r)
+		return
+	}
 	if s.checkoutPriceID == "" {
 		writeErr(w, http.StatusServiceUnavailable, "checkout_unavailable")
 		return
@@ -118,6 +127,79 @@ func (s *Service) handleStartCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, startCheckoutResp{CheckoutURL: checkoutURL, ExpiresIn: int(s.claimTTL.Seconds())})
+}
+
+// startCheckoutOpen handles POST /v1/checkout/start when billing is disabled.
+// It mirrors the claim-token contract the desktop already speaks: provision an
+// account + open license, mark a ready claim bound to the desktop's nonce, and
+// return a checkout_url carrying a one-time claim_code straight to the desktop's
+// loopback callback. The desktop's browser callback redeems the code, and its
+// fallback nonce-poll redeems the same claim — either path yields the credential
+// with no Stripe and no client changes.
+func (s *Service) startCheckoutOpen(w http.ResponseWriter, r *http.Request) {
+	var req startCheckoutReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	if len(req.Nonce) < minNonceLen || strings.ContainsAny(req.Nonce, " \t\r\n/?#") {
+		writeErr(w, http.StatusBadRequest, "bad_nonce")
+		return
+	}
+	if err := validateLoopbackRedirect(req.RedirectURI); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_redirect")
+		return
+	}
+
+	ctx := r.Context()
+	now := s.now()
+
+	// Fresh account per upgrade, provisioned with an open license + subscription.
+	accountID := authstore.NewID("acct")
+	if err := s.store.UpsertAccount(ctx, authstore.Account{ID: accountID, CreatedAt: now}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	licID, subID, err := s.provisionOpenLicense(ctx, accountID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
+	// Record a claim bound to the nonce and immediately bind it ready — there is
+	// no webhook to wait for.
+	claim := authstore.CheckoutClaim{
+		Nonce:       req.Nonce,
+		RedirectURI: req.RedirectURI,
+		Status:      authstore.ClaimPending,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(s.claimTTL),
+	}
+	if err := s.store.CreateCheckoutClaim(ctx, claim); err != nil {
+		if errors.Is(err, authstore.ErrConflict) {
+			writeErr(w, http.StatusConflict, "nonce_in_use")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	if err := s.store.MarkCheckoutClaimReady(ctx, req.Nonce, accountID, licID, subID, ""); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+	// Mint the one-time claim code now so the browser callback path works too;
+	// the nonce-poll path consumes the same claim if it wins the race.
+	claimCode := authstore.NewID("clm")
+	if err := s.store.SetCheckoutClaimCode(ctx, req.Nonce, hashSecret(claimCode)); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
+	s.log.Info("open checkout provisioned (billing disabled)", logging.FieldAccountID, accountID, "license_id", licID, "subscription_id", subID)
+	writeJSON(w, http.StatusOK, startCheckoutResp{
+		CheckoutURL: appendQuery(req.RedirectURI, "claim_code", claimCode),
+		ExpiresIn:   int(s.claimTTL.Seconds()),
+	})
 }
 
 // --- GET /v1/checkout/return (Stripe success_url; browser) ---

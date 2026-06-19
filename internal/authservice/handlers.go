@@ -87,7 +87,7 @@ func (s *Service) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 	// With billing disabled there is no Stripe checkout to mint a license, so
 	// provision an open one here and hand back its id for the pairing flow.
 	if !s.billingEnabled {
-		licID, err := s.provisionOpenLicense(ctx, req.AccountID)
+		licID, _, err := s.provisionOpenLicense(ctx, req.AccountID)
 		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "store_error")
 			return
@@ -101,18 +101,18 @@ func (s *Service) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 // licenses (billing disabled). Mirrors the AUTH_DEV_SEED default of 1.
 const openLicenseMaxPairs = 1
 
-// provisionOpenLicense returns the account's open license id, creating an
-// always-valid subscription + active license on first call. It is idempotent:
-// repeat calls (e.g. admin secret rotation) reuse the existing active license
-// rather than accumulating slots.
-func (s *Service) provisionOpenLicense(ctx context.Context, accountID string) (string, error) {
+// provisionOpenLicense returns the account's open license + subscription ids,
+// creating an always-valid subscription + active license on first call. It is
+// idempotent: repeat calls (e.g. admin secret rotation) reuse the existing
+// active license rather than accumulating slots.
+func (s *Service) provisionOpenLicense(ctx context.Context, accountID string) (licenseID, subscriptionID string, err error) {
 	existing, err := s.store.ListLicensesByAccount(ctx, accountID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	for _, l := range existing {
 		if l.Status == authstore.LicenseActive {
-			return l.ID, nil
+			return l.ID, l.SubscriptionID, nil
 		}
 	}
 	now := s.now()
@@ -121,17 +121,17 @@ func (s *Service) provisionOpenLicense(ctx context.Context, accountID string) (s
 		MaxPairs: openLicenseMaxPairs, CurrentPeriodEnd: now.AddDate(100, 0, 0), UpdatedAt: now,
 	}
 	if err := s.store.UpsertSubscription(ctx, sub); err != nil {
-		return "", err
+		return "", "", err
 	}
 	lic := authstore.License{
 		ID: license.NewKey(), AccountID: accountID, SubscriptionID: sub.ID,
 		Status: authstore.LicenseActive, CreatedAt: now,
 	}
 	if err := s.store.CreateLicense(ctx, lic); err != nil {
-		return "", err
+		return "", "", err
 	}
 	s.log.Info("open license provisioned (billing disabled)", logging.FieldAccountID, accountID, "license_id", lic.ID, "subscription_id", sub.ID)
-	return lic.ID, nil
+	return lic.ID, sub.ID, nil
 }
 
 // --- Devices ---

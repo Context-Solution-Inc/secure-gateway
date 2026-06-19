@@ -285,9 +285,12 @@ page (the desktop already has its credential) — it is not treated as expired.
 the portal once in the Stripe dashboard (test: Settings → Billing → Customer
 portal), or the call returns `502 stripe_error`.
 
-Requires Stripe to be enabled — the `AUTH_STRIPE_*` trio plus `AUTH_PUBLIC_URL`
-(the `success_url` base); see [Billing modes](#billing-modes-stripe-enabled-vs-disabled).
-When Stripe is disabled, `/v1/checkout/start` returns `503 checkout_unavailable`. Security: the redirect is
+The paid path requires Stripe to be enabled — the `AUTH_STRIPE_*` trio plus
+`AUTH_PUBLIC_URL` (the `success_url` base); see
+[Billing modes](#billing-modes-stripe-enabled-vs-disabled). When Stripe is
+disabled, `/v1/checkout/start` skips Stripe entirely: it auto-provisions the
+account + open license and returns a `checkout_url` carrying the `claim_code`
+directly, so the same desktop flow completes without payment. Security: the redirect is
 validated **loopback-only** so a `claim_code` can never be delivered to a remote
 host; the claim is single-use with a short TTL (`AUTH_CLAIM_TTL`, default 30m);
 the `nonce` binds start→webhook→return and `/return` checks `session_id`.
@@ -353,12 +356,17 @@ startup so an accidental omission can never silently leave secure links ungated:
 | `AUTH_STRIPE_WEBHOOK_SECRET` / `_SECRET_KEY` / `_PRICE_ID` | `AUTH_BILLING_DISABLED` | Result |
 |---|---|---|
 | all three set | (ignored) | **Stripe enabled** — secure links gated on a valid subscription (also requires `AUTH_PUBLIC_URL`) |
-| none set | `true` | **Stripe disabled** — secure links ungated; an open license is auto-provisioned on `POST /v1/accounts` (returns `license_id`). A loud warning is logged at startup |
+| none set | `true` | **Stripe disabled** — secure links ungated; an open license is auto-provisioned. A loud warning is logged at startup |
 | none set | unset/`false` | **startup error** — refuses to boot |
 | some set, some missing | (any) | **startup error** — names the missing var(s) |
 
-In disabled mode `POST /v1/webhooks/stripe` and `POST /v1/checkout/start` return
-`503`.
+In disabled mode the desktop "upgrade" flow still works unchanged: `POST
+/v1/checkout/start` auto-provisions an account + open license and returns a
+`checkout_url` carrying a one-time `claim_code` (instead of a Stripe URL), which
+the desktop redeems via `POST /v1/accounts/claim` exactly as in the paid flow —
+so the client never needs to know whether Stripe is on or off. An open license is
+also provisioned directly on `POST /v1/accounts` (returns `license_id`). Only
+`POST /v1/webhooks/stripe` returns `503`.
 
 ## Client SDKs (M4)
 
