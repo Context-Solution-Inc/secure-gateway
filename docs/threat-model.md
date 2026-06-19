@@ -1,7 +1,7 @@
 # Threat model — Secure Device Relay
 
 Status: M5 (Hardening & Scale). Maintained alongside
-[`prd-secure-mobile-desktop-relay.md`](../prd-secure-mobile-desktop-relay.md)
+[`prd-secure-mobile-desktop-relay.md`](./prd-secure-mobile-desktop-relay.md)
 (PRD §10.2). This document is the standalone form of the threat model that the
 PRD references inline; update it when the architecture or enforcement points
 change.
