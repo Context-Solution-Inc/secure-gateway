@@ -92,11 +92,13 @@ services:
       AUTH_BACKPLANE: "redis"
       AUTH_REDIS_ADDR: "redis:6379"
       AUTH_REDIS_PASSWORD: "${REDIS_PASSWORD}"
-      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
-      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
-      # Desktop subscription onboarding (claim-token flow). Empty price id ⇒
-      # POST /v1/checkout/start is disabled (503); see deploy/compose/.env.example.
+      # Stripe is all-or-none: set all three to enable billing, or leave all
+      # three empty with AUTH_BILLING_DISABLED=true to run ungated. A partial set
+      # is rejected at startup. See deploy/compose/.env.example.
+      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET:-}"
+      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY:-}"
       AUTH_STRIPE_PRICE_ID: "${AUTH_STRIPE_PRICE_ID:-}"
+      AUTH_BILLING_DISABLED: "${AUTH_BILLING_DISABLED:-false}"
       AUTH_CLAIM_TTL: "${AUTH_CLAIM_TTL:-30m}"
       AUTH_ADMIN_KEY: "${AUTH_ADMIN_KEY}"
       AUTH_PUBLIC_URL: "https://${AUTH_HOST}"

@@ -36,6 +36,7 @@ type Service struct {
 	authURL         string // advertised in the QR payload endpoints; also the checkout return base
 	checkoutPriceID string // Stripe price id for the desktop subscription plan
 	claimTTL        time.Duration
+	billingEnabled  bool // when false, secure links are ungated and an open license is auto-provisioned
 	now             func() time.Time
 }
 
@@ -58,6 +59,7 @@ type Deps struct {
 	AuthURL         string
 	CheckoutPriceID string
 	ClaimTTL        time.Duration
+	BillingEnabled  bool             // when false, gating is bypassed and an open license is auto-provisioned
 	Now             func() time.Time // optional; defaults to time.Now
 }
 
@@ -84,6 +86,6 @@ func NewService(d Deps) *Service {
 		issuer: d.Issuer, audience: d.Audience, tokenTTL: d.TokenTTL, refreshTTL: d.RefreshTTL,
 		pairingTokenTTL: pairingTTL, grace: d.Grace, adminKey: d.AdminKey,
 		relayURL: d.RelayURL, authURL: d.AuthURL,
-		checkoutPriceID: d.CheckoutPriceID, claimTTL: claimTTL, now: now,
+		checkoutPriceID: d.CheckoutPriceID, claimTTL: claimTTL, billingEnabled: d.BillingEnabled, now: now,
 	}
 }

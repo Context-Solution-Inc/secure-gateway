@@ -57,6 +57,10 @@ type accountReq struct {
 type accountResp struct {
 	AccountID string `json:"account_id"`
 	Secret    string `json:"secret"`
+	// LicenseID is populated only when billing is disabled: the account is
+	// provisioned with an open, always-valid license so the desktop has an id to
+	// create secure links with (there is no Stripe checkout to mint one).
+	LicenseID string `json:"license_id,omitempty"`
 }
 
 // handleCreateAccount mints (or rotates) an account credential. Gated by the
@@ -72,13 +76,62 @@ func (s *Service) handleCreateAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad_request")
 		return
 	}
+	ctx := r.Context()
 	secret := newAccountSecret(req.AccountID)
 	acct := authstore.Account{ID: req.AccountID, SecretHash: hashSecret(secret), CreatedAt: s.now()}
-	if err := s.store.UpsertAccount(r.Context(), acct); err != nil {
+	if err := s.store.UpsertAccount(ctx, acct); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error")
 		return
 	}
-	writeJSON(w, http.StatusOK, accountResp{AccountID: req.AccountID, Secret: secret})
+	resp := accountResp{AccountID: req.AccountID, Secret: secret}
+	// With billing disabled there is no Stripe checkout to mint a license, so
+	// provision an open one here and hand back its id for the pairing flow.
+	if !s.billingEnabled {
+		licID, _, err := s.provisionOpenLicense(ctx, req.AccountID)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+		resp.LicenseID = licID
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// openLicenseMaxPairs is the entitlement count for auto-provisioned open
+// licenses (billing disabled). Mirrors the AUTH_DEV_SEED default of 1.
+const openLicenseMaxPairs = 1
+
+// provisionOpenLicense returns the account's open license + subscription ids,
+// creating an always-valid subscription + active license on first call. It is
+// idempotent: repeat calls (e.g. admin secret rotation) reuse the existing
+// active license rather than accumulating slots.
+func (s *Service) provisionOpenLicense(ctx context.Context, accountID string) (licenseID, subscriptionID string, err error) {
+	existing, err := s.store.ListLicensesByAccount(ctx, accountID)
+	if err != nil {
+		return "", "", err
+	}
+	for _, l := range existing {
+		if l.Status == authstore.LicenseActive {
+			return l.ID, l.SubscriptionID, nil
+		}
+	}
+	now := s.now()
+	sub := authstore.Subscription{
+		ID: authstore.NewID("sub"), AccountID: accountID, Status: authstore.SubActive,
+		MaxPairs: openLicenseMaxPairs, CurrentPeriodEnd: now.AddDate(100, 0, 0), UpdatedAt: now,
+	}
+	if err := s.store.UpsertSubscription(ctx, sub); err != nil {
+		return "", "", err
+	}
+	lic := authstore.License{
+		ID: license.NewKey(), AccountID: accountID, SubscriptionID: sub.ID,
+		Status: authstore.LicenseActive, CreatedAt: now,
+	}
+	if err := s.store.CreateLicense(ctx, lic); err != nil {
+		return "", "", err
+	}
+	s.log.Info("open license provisioned (billing disabled)", logging.FieldAccountID, accountID, "license_id", lic.ID, "subscription_id", sub.ID)
+	return lic.ID, sub.ID, nil
 }
 
 // --- Devices ---
@@ -245,6 +298,12 @@ func (s *Service) rejectToken(w http.ResponseWriter, status int, code string) {
 // --- Webhooks ---
 
 func (s *Service) handleWebhook(w http.ResponseWriter, r *http.Request) {
+	// With billing disabled there is no webhook secret to verify against; reject
+	// outright rather than failing closed on an empty-secret verification.
+	if !s.billingEnabled {
+		s.rejectWebhook(w, http.StatusServiceUnavailable, "billing_disabled")
+		return
+	}
 	ctx := r.Context()
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 	if err != nil {
@@ -317,6 +376,12 @@ func (s *Service) pairingIssuable(ctx context.Context, pairing authstore.Pairing
 func (s *Service) licenseIssuable(ctx context.Context, lic authstore.License) (authstore.License, bool) {
 	if lic.Status != authstore.LicenseActive {
 		return lic, false
+	}
+	// Open mode: with billing disabled there is no Stripe subscription to
+	// evaluate, so an active license alone authorizes secure links (PRD §6.5 #1
+	// gating is intentionally bypassed).
+	if !s.billingEnabled {
+		return lic, true
 	}
 	sub, err := s.store.GetSubscription(ctx, lic.SubscriptionID)
 	if err != nil {

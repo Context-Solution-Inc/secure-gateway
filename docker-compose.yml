@@ -65,12 +65,16 @@ services:
       AUTH_REDIS_ADDR: "redis:6379"
       AUTH_PUBLIC_URL: "http://${LOCAL_IP_ADDR}:8080"
       AUTH_RELAY_URL: "ws://${LOCAL_IP_ADDR}:8443/v1/connect"
-      # Set these to your Stripe test-mode values to drive a real lifecycle:
-      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET}"
-      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY}"
-      # Desktop subscription onboarding (claim-token flow). Empty price id ⇒
-      # POST /v1/checkout/start is disabled (503); see deploy/compose/.env.example.
+      # Stripe is all-or-none: set all three AUTH_STRIPE_* to your test-mode
+      # values to drive a real lifecycle, or leave all three empty and set
+      # AUTH_BILLING_DISABLED=true to run ungated. A partial set is rejected at
+      # startup. See deploy/compose/.env.example.
+      AUTH_STRIPE_WEBHOOK_SECRET: "${AUTH_STRIPE_WEBHOOK_SECRET:-}"
+      AUTH_STRIPE_SECRET_KEY: "${AUTH_STRIPE_SECRET_KEY:-}"
       AUTH_STRIPE_PRICE_ID: "${AUTH_STRIPE_PRICE_ID:-}"
+      # Explicit acknowledgement required to boot with no Stripe config; in that
+      # mode an open license is auto-provisioned and secure links are ungated.
+      AUTH_BILLING_DISABLED: "${AUTH_BILLING_DISABLED:-false}"
       AUTH_CLAIM_TTL: 30m
       AUTH_ADMIN_KEY: "dev_admin_key"
       AUTH_LOG_FORMAT: "json"

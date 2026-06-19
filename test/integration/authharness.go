@@ -55,6 +55,17 @@ type authHarness struct {
 }
 
 func newAuthHarness(t *testing.T, serverOpts ...func(*authservice.ServerConfig)) *authHarness {
+	return buildAuthHarness(t, true, serverOpts...)
+}
+
+// newAuthHarnessNoBilling runs the stack with Stripe disabled (the
+// AUTH_BILLING_DISABLED open mode): secure links are ungated and accounts are
+// provisioned with an open license.
+func newAuthHarnessNoBilling(t *testing.T, serverOpts ...func(*authservice.ServerConfig)) *authHarness {
+	return buildAuthHarness(t, false, serverOpts...)
+}
+
+func buildAuthHarness(t *testing.T, billingEnabled bool, serverOpts ...func(*authservice.ServerConfig)) *authHarness {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -73,12 +84,18 @@ func newAuthHarness(t *testing.T, serverOpts ...func(*authservice.ServerConfig))
 		Grace: 168 * time.Hour, WebhookSecret: testWebhookSecret,
 	})
 
+	// In open mode there is no Stripe checkout price, mirroring production config.
+	checkoutPriceID := testPriceID
+	if !billingEnabled {
+		checkoutPriceID = ""
+	}
 	svc := authservice.NewService(authservice.Deps{
 		Store: store, Signer: sgn, Processor: proc, Backplane: bp, Metrics: authmetrics.New(), Logger: log,
 		Issuer: testIssuer, Audience: testAud, TokenTTL: 10 * time.Minute, RefreshTTL: 720 * time.Hour,
 		Grace: 168 * time.Hour, AdminKey: testAdminKey,
 		RelayURL: "wss://relay.test/v1/connect", AuthURL: "https://auth.test",
-		CheckoutPriceID: testPriceID, ClaimTTL: 30 * time.Minute,
+		CheckoutPriceID: checkoutPriceID, ClaimTTL: 30 * time.Minute,
+		BillingEnabled: billingEnabled,
 	})
 	srvCfg := authservice.ServerConfig{ListenAddr: "127.0.0.1:0", TLSMinVersion: "1.2", ShutdownDrain: time.Second}
 	for _, opt := range serverOpts {
@@ -157,6 +174,22 @@ func (a *authHarness) createAccount(t *testing.T, accountID string) string {
 	}
 	mustUnmarshal(t, body, &r)
 	return r.Secret
+}
+
+// createAccountOpen creates an account in open mode (billing disabled) and
+// returns the bearer secret plus the auto-provisioned open license id.
+func (a *authHarness) createAccountOpen(t *testing.T, accountID string) (secret, licenseID string) {
+	t.Helper()
+	status, body := a.do(t, http.MethodPost, "/v1/accounts", testAdminKey, map[string]string{"account_id": accountID})
+	if status != http.StatusOK {
+		t.Fatalf("createAccountOpen: status %d body %s", status, body)
+	}
+	var r struct {
+		Secret    string `json:"secret"`
+		LicenseID string `json:"license_id"`
+	}
+	mustUnmarshal(t, body, &r)
+	return r.Secret, r.LicenseID
 }
 
 func (a *authHarness) registerDevice(t *testing.T, secret, role string) string {
