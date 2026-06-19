@@ -1,7 +1,31 @@
+# Compiled binaries & signing keys (never commit)
 /bin/
 /keys/
 *.pem
 *.key.json
+
 # Production compose secrets / signing keys (never commit)
 /deploy/compose/.env
 /deploy/compose/keys/
+
+# Local environment files (keep .env.example tracked)
+.env
+.env.*
+!.env.example
+
+# Go build / test artifacts
+*.test
+*.out
+
+# JVM / Gradle SDK build artifacts (the gradle/ wrapper dir stays tracked)
+.gradle/
+build/
+
+# Swift / iOS build artifacts
+.build/
+
+# OS / editor cruft
+.DS_Store
+.idea/
+*.iml
+.vscode/
