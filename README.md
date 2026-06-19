@@ -55,6 +55,8 @@ dry-run. You need only Docker (with the compose plugin) and the Go toolchain to
 generate a signing key.
 
 ```sh
+cd secure-gateway
+cp .env.example .env
 make keys                 # ./keys/relay.key.json (the auth signing key, mounted ro)
 # The auth container runs as the distroless nonroot user (uid 65532), so the
 # bind-mounted key must be readable by it. For this throwaway dev key:
