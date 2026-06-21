@@ -14,23 +14,29 @@ import (
 )
 
 // e2eeSessions builds the mobile and desktop sessions for one connection from a
-// fresh X25519 exchange and a pair of handshake nonces (FR-5.2).
+// fresh identity exchange plus per-session ephemeral keys (FR-5.2, forward secrecy).
 func e2eeSessions(t *testing.T) (mobile, desktop *e2ee.Session) {
 	t.Helper()
-	m, err := e2ee.GenerateKeyPair()
+	m, err := e2ee.GenerateKeyPair() // mobile identity
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := e2ee.GenerateKeyPair()
+	d, err := e2ee.GenerateKeyPair() // desktop identity
 	if err != nil {
 		t.Fatal(err)
 	}
-	mn, _ := e2ee.NewHandshakeNonce()
-	dn, _ := e2ee.NewHandshakeNonce()
-	if mobile, err = e2ee.NewSession(m.Private, d.Public, token.RoleMobile, mn, dn); err != nil {
+	me, err := e2ee.GenerateKeyPair() // mobile ephemeral
+	if err != nil {
 		t.Fatal(err)
 	}
-	if desktop, err = e2ee.NewSession(d.Private, m.Public, token.RoleDesktop, mn, dn); err != nil {
+	de, err := e2ee.GenerateKeyPair() // desktop ephemeral
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mobile, err = e2ee.NewSession(m.Private, d.Public, me.Private, de.Public, token.RoleMobile); err != nil {
+		t.Fatal(err)
+	}
+	if desktop, err = e2ee.NewSession(d.Private, m.Public, de.Private, me.Public, token.RoleDesktop); err != nil {
 		t.Fatal(err)
 	}
 	return mobile, desktop

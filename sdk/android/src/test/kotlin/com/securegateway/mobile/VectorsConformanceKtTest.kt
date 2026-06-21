@@ -45,8 +45,10 @@ class VectorsConformanceKtTest {
         val mobilePub = Hex.decode(v.get("mobile_public").asText())
         val desktopPriv = Hex.decode(v.get("desktop_private").asText())
         val desktopPub = Hex.decode(v.get("desktop_public").asText())
-        val mobileNonce = Hex.decode(v.get("mobile_handshake_nonce").asText())
-        val desktopNonce = Hex.decode(v.get("desktop_handshake_nonce").asText())
+        val mobileEphPriv = Hex.decode(v.get("mobile_ephemeral_private").asText())
+        val mobileEphPub = Hex.decode(v.get("mobile_ephemeral_public").asText())
+        val desktopEphPriv = Hex.decode(v.get("desktop_ephemeral_private").asText())
+        val desktopEphPub = Hex.decode(v.get("desktop_ephemeral_public").asText())
         val messageNonce = Hex.decode(v.get("message_nonce").asText())
         val id = v.get("id").asText()
         val ts = v.get("ts").asLong()
@@ -56,18 +58,23 @@ class VectorsConformanceKtTest {
 
         assertArrayEquals(mobilePub, Crypto.publicFromPrivate(mobilePriv), "mobile public")
         assertArrayEquals(desktopPub, Crypto.publicFromPrivate(desktopPriv), "desktop public")
+        assertArrayEquals(mobileEphPub, Crypto.publicFromPrivate(mobileEphPriv), "mobile ephemeral public")
+        assertArrayEquals(desktopEphPub, Crypto.publicFromPrivate(desktopEphPriv), "desktop ephemeral public")
 
-        val senderPriv = if (sender == Role.MOBILE) mobilePriv else desktopPriv
-        val peerPub = if (sender == Role.MOBILE) desktopPub else mobilePub
-        val senderSession = Session.create(senderPriv, peerPub, sender, mobileNonce, desktopNonce)
+        val senderSession = if (sender == Role.MOBILE) {
+            Session.create(mobilePriv, desktopPub, mobileEphPriv, desktopEphPub, Role.MOBILE)
+        } else {
+            Session.create(desktopPriv, mobilePub, desktopEphPriv, mobileEphPub, Role.DESKTOP)
+        }
         // sealWith is package-private in :core; the test bridge below exposes it.
         val produced = SealBridge.sealWith(senderSession, messageNonce, id, ts, plaintext)
         assertArrayEquals(wire, produced, "wire ciphertext")
 
-        val peerRole = if (sender == Role.MOBILE) Role.DESKTOP else Role.MOBILE
-        val receiverPriv = if (sender == Role.MOBILE) desktopPriv else mobilePriv
-        val receiverPeerPub = if (sender == Role.MOBILE) mobilePub else desktopPub
-        val receiverSession = Session.create(receiverPriv, receiverPeerPub, peerRole, mobileNonce, desktopNonce)
+        val receiverSession = if (sender == Role.MOBILE) {
+            Session.create(desktopPriv, mobilePub, desktopEphPriv, mobileEphPub, Role.DESKTOP)
+        } else {
+            Session.create(mobilePriv, desktopPub, mobileEphPriv, desktopEphPub, Role.MOBILE)
+        }
         assertArrayEquals(plaintext, receiverSession.open(id, ts, wire), "decrypted plaintext")
     }
 

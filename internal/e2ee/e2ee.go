@@ -6,16 +6,27 @@
 // The relay never links this package: payloads are opaque ciphertext to it
 // (FR-4.2, FR-5.4). Only the mobile and desktop clients encrypt and decrypt.
 //
-// # Scheme (the contract)
+// # Scheme (the contract — v2)
 //
 //   - Keys: X25519 (Curve25519). A private key is 32 random bytes; the public
-//     key is X25519(priv, basepoint).
-//   - Shared secret: ss = X25519(myPriv, peerPub) (32 bytes).
-//   - Session keys (directional, per session): each side contributes a fresh
-//     32-byte handshake nonce, exchanged in the first message of the session. Two
-//     directional keys are derived with HKDF-SHA256:
-//     salt = mobileHandshakeNonce || desktopHandshakeNonce (mobile first, fixed
-//     by role — not by who initiated); info = "secure-gateway/e2ee/v1|" + dir
+//     key is X25519(priv, basepoint). Each device has a long-term IDENTITY
+//     keypair (public half exchanged and trusted at QR pairing) and generates a
+//     fresh EPHEMERAL keypair per session whose public half is exchanged in the
+//     first handshake frame.
+//   - Forward secrecy (FR-5.2): the session keys mix four X25519 shared secrets,
+//     Noise-KK style, so confidentiality survives compromise of the long-term
+//     identity keys (the ephemeral private keys are discarded after the session):
+//     ss = DH(mobileIdentity, desktopIdentity)   — authenticates the identities
+//     ee = DH(mobileEphemeral, desktopEphemeral) — forward secrecy
+//     md = DH(mobileIdentity, desktopEphemeral)
+//     dm = DH(desktopIdentity, mobileEphemeral)
+//     ikm = ss || ee || md || dm (concatenated in that canonical, role-independent
+//     order). Authentication still holds because computing ss/md/dm requires the
+//     long-term identity private keys exchanged at pairing.
+//   - Session keys (directional, per session): two keys are derived with
+//     HKDF-SHA256 over ikm with
+//     salt = mobileEphemeralPub || desktopEphemeralPub (mobile first, fixed by
+//     role — not by who initiated) and info = "secure-gateway/e2ee/v2|" + dir
 //     where dir is "m2d" (mobile→desktop) or "d2m" (desktop→mobile); output is
 //     32 bytes. K_m2d is used by the mobile to seal and the desktop to open;
 //     K_d2m is the reverse.
@@ -29,18 +40,6 @@
 //
 // Only golang.org/x/crypto primitives are used; there is no custom cryptography
 // (FR-5.3).
-//
-// # Forward secrecy (not yet provided — FR-5.2)
-//
-// The shared secret is computed from the long-term X25519 identity keys only; the
-// handshake nonces vary the derived keys per session but feed the HKDF salt, not
-// the input keying material. This gives per-session key separation but NOT forward
-// secrecy: an adversary who records ciphertext and the cleartext handshake nonces
-// and later compromises a device's long-term identity private key can re-derive
-// every past and future session key and decrypt the recorded traffic. Adding an
-// ephemeral X25519 exchange per session (mixing the ephemeral DH into the HKDF
-// IKM) to provide real forward secrecy is tracked as a follow-up; until it lands,
-// do not rely on forward secrecy. See docs/SECURITY-AUDIT.md (SG-01).
 package e2ee
 
 import (
@@ -75,13 +74,10 @@ const defaultReplayWindowMillis int64 = 5 * 60 * 1000
 const (
 	// KeySize is the X25519 key length and the derived AEAD key length.
 	KeySize = 32
-	// HandshakeNonceSize is the per-session handshake nonce length each side
-	// contributes to the HKDF salt.
-	HandshakeNonceSize = 32
 	// NonceSize is the XChaCha20-Poly1305 nonce length prepended to ciphertext.
 	NonceSize = chacha20poly1305.NonceSizeX // 24
 
-	infoPrefix = "secure-gateway/e2ee/v1|"
+	infoPrefix = "secure-gateway/e2ee/v2|"
 	dirM2D     = "m2d" // mobile -> desktop
 	dirD2M     = "d2m" // desktop -> mobile
 )
@@ -122,17 +118,8 @@ func PublicFromPrivate(priv [KeySize]byte) ([KeySize]byte, error) {
 	return pub, nil
 }
 
-// NewHandshakeNonce returns a fresh 32-byte session handshake nonce.
-func NewHandshakeNonce() ([]byte, error) {
-	n := make([]byte, HandshakeNonceSize)
-	if _, err := io.ReadFull(rand.Reader, n); err != nil {
-		return nil, fmt.Errorf("e2ee: read random: %w", err)
-	}
-	return n, nil
-}
-
 // Session holds the two directional keys for one connection session. Build one
-// per session after both handshake nonces have been exchanged.
+// per session after both ephemeral public keys have been exchanged.
 type Session struct {
 	sendKey [KeySize]byte // seals outbound (this device -> peer)
 	recvKey [KeySize]byte // opens inbound (peer -> this device)
@@ -179,27 +166,66 @@ func (g *replayGuard) check(id string, ts int64) error {
 	return nil
 }
 
-// NewSession derives the directional session keys from the X25519 shared secret
-// and both sides' handshake nonces, assigning send/recv from myRole. mobileNonce
-// and desktopNonce must each be HandshakeNonceSize bytes and identical on both
-// devices.
-func NewSession(myPriv, peerPub [KeySize]byte, myRole Role, mobileNonce, desktopNonce []byte) (*Session, error) {
+// NewSession derives the directional session keys for one connection, assigning
+// send/recv from myRole. idPriv/peerIDPub are this device's long-term identity
+// private key and the peer's long-term identity public key (exchanged at
+// pairing); ephPriv/peerEphPub are this session's ephemeral private key and the
+// peer's ephemeral public key (exchanged in the handshake). Mixing the ephemeral
+// DH into the keying material gives forward secrecy (FR-5.2); the identity DH
+// authenticates the peer.
+func NewSession(idPriv, peerIDPub, ephPriv, peerEphPub [KeySize]byte, myRole Role) (*Session, error) {
 	if myRole != token.RoleMobile && myRole != token.RoleDesktop {
 		return nil, fmt.Errorf("e2ee: invalid role %q", myRole)
 	}
-	if len(mobileNonce) != HandshakeNonceSize || len(desktopNonce) != HandshakeNonceSize {
-		return nil, fmt.Errorf("e2ee: handshake nonces must be %d bytes", HandshakeNonceSize)
-	}
-	shared, err := x25519(myPriv, peerPub)
-	if err != nil {
-		// X25519 rejects low-order points (all-zero shared secret).
-		return nil, fmt.Errorf("e2ee: ecdh: %w", err)
-	}
-	keyM2D, err := deriveKey(shared, mobileNonce, desktopNonce, dirM2D)
+	myEphPub, err := PublicFromPrivate(ephPriv)
 	if err != nil {
 		return nil, err
 	}
-	keyD2M, err := deriveKey(shared, mobileNonce, desktopNonce, dirD2M)
+	// Four X25519 shared secrets (Noise-KK style). x25519 rejects low-order points.
+	ss, err := x25519(idPriv, peerIDPub) // identity<->identity: authentication
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: ecdh ss: %w", err)
+	}
+	ee, err := x25519(ephPriv, peerEphPub) // ephemeral<->ephemeral: forward secrecy
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: ecdh ee: %w", err)
+	}
+	// md = DH(mobileIdentity, desktopEphemeral); dm = DH(desktopIdentity, mobileEphemeral).
+	// Each side computes the same canonical bytes from its own private keys.
+	var md, dm []byte
+	if myRole == token.RoleMobile {
+		md, err = x25519(idPriv, peerEphPub)
+		if err == nil {
+			dm, err = x25519(ephPriv, peerIDPub)
+		}
+	} else {
+		md, err = x25519(ephPriv, peerIDPub)
+		if err == nil {
+			dm, err = x25519(idPriv, peerEphPub)
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: ecdh cross: %w", err)
+	}
+
+	ikm := make([]byte, 0, 4*KeySize)
+	ikm = append(append(append(append(ikm, ss...), ee...), md...), dm...)
+
+	// salt = mobileEphemeralPub || desktopEphemeralPub (mobile first, by role).
+	var mobileEphPub, desktopEphPub []byte
+	if myRole == token.RoleMobile {
+		mobileEphPub, desktopEphPub = myEphPub[:], peerEphPub[:]
+	} else {
+		mobileEphPub, desktopEphPub = peerEphPub[:], myEphPub[:]
+	}
+	salt := make([]byte, 0, 2*KeySize)
+	salt = append(append(salt, mobileEphPub...), desktopEphPub...)
+
+	keyM2D, err := deriveKey(ikm, salt, dirM2D)
+	if err != nil {
+		return nil, err
+	}
+	keyD2M, err := deriveKey(ikm, salt, dirD2M)
 	if err != nil {
 		return nil, err
 	}
@@ -217,11 +243,8 @@ func x25519(priv, peerPub [KeySize]byte) ([]byte, error) {
 	return curve25519.X25519(priv[:], peerPub[:])
 }
 
-func deriveKey(shared, mobileNonce, desktopNonce []byte, dir string) ([KeySize]byte, error) {
-	salt := make([]byte, 0, len(mobileNonce)+len(desktopNonce))
-	salt = append(salt, mobileNonce...)
-	salt = append(salt, desktopNonce...)
-	r := hkdf.New(sha256.New, shared, salt, []byte(infoPrefix+dir))
+func deriveKey(ikm, salt []byte, dir string) ([KeySize]byte, error) {
+	r := hkdf.New(sha256.New, ikm, salt, []byte(infoPrefix+dir))
 	var key [KeySize]byte
 	if _, err := io.ReadFull(r, key[:]); err != nil {
 		return key, fmt.Errorf("e2ee: hkdf: %w", err)

@@ -13,12 +13,12 @@ import org.junit.jupiter.api.Test;
 class SessionReplayTest {
 
     private static Session[] pair() {
-        KeyPair m = Crypto.generateKeyPair();
-        KeyPair d = Crypto.generateKeyPair();
-        byte[] mn = Crypto.newHandshakeNonce();
-        byte[] dn = Crypto.newHandshakeNonce();
-        Session mobile = Session.create(m.privateKey(), d.publicKey(), Role.MOBILE, mn, dn);
-        Session desktop = Session.create(d.privateKey(), m.publicKey(), Role.DESKTOP, mn, dn);
+        KeyPair m = Crypto.generateKeyPair();  // mobile identity
+        KeyPair d = Crypto.generateKeyPair();  // desktop identity
+        KeyPair me = Crypto.generateKeyPair(); // mobile ephemeral
+        KeyPair de = Crypto.generateKeyPair(); // desktop ephemeral
+        Session mobile = Session.create(m.privateKey(), d.publicKey(), me.privateKey(), de.publicKey(), Role.MOBILE);
+        Session desktop = Session.create(d.privateKey(), m.publicKey(), de.privateKey(), me.publicKey(), Role.DESKTOP);
         return new Session[] {mobile, desktop};
     }
 

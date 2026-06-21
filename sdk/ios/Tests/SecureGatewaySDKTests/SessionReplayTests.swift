@@ -9,12 +9,14 @@ import XCTest
 final class SessionReplayTests: XCTestCase {
 
     private func pair() throws -> (mobile: Session, desktop: Session) {
-        let m = Crypto.generateKeyPair()
-        let d = Crypto.generateKeyPair()
-        let mn = Crypto.newHandshakeNonce()
-        let dn = Crypto.newHandshakeNonce()
-        let mobile = try Session.create(myPriv: m.privateKey, peerPub: d.publicKey, role: .mobile, mobileNonce: mn, desktopNonce: dn)
-        let desktop = try Session.create(myPriv: d.privateKey, peerPub: m.publicKey, role: .desktop, mobileNonce: mn, desktopNonce: dn)
+        let m = Crypto.generateKeyPair()  // mobile identity
+        let d = Crypto.generateKeyPair()  // desktop identity
+        let me = Crypto.generateKeyPair() // mobile ephemeral
+        let de = Crypto.generateKeyPair() // desktop ephemeral
+        let mobile = try Session.create(idPriv: m.privateKey, peerIdPub: d.publicKey,
+                                        ephPriv: me.privateKey, peerEphPub: de.publicKey, role: .mobile)
+        let desktop = try Session.create(idPriv: d.privateKey, peerIdPub: m.publicKey,
+                                         ephPriv: de.privateKey, peerEphPub: me.publicKey, role: .desktop)
         return (mobile, desktop)
     }
 

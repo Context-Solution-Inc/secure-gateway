@@ -12,7 +12,8 @@ final class VectorsConformanceTests: XCTestCase {
     struct Vector: Decodable {
         let name, sender: String
         let mobile_private, mobile_public, desktop_private, desktop_public: String
-        let mobile_handshake_nonce, desktop_handshake_nonce: String
+        let mobile_ephemeral_private, mobile_ephemeral_public: String
+        let desktop_ephemeral_private, desktop_ephemeral_public: String
         let key_m2d, key_d2m, message_nonce, id: String
         let ts: Int64
         let plaintext, wire_ciphertext: String
@@ -27,32 +28,40 @@ final class VectorsConformanceTests: XCTestCase {
         for v in file.vectors {
             let mobilePriv = hex(v.mobile_private), mobilePub = hex(v.mobile_public)
             let desktopPriv = hex(v.desktop_private), desktopPub = hex(v.desktop_public)
-            let mobileNonce = hex(v.mobile_handshake_nonce), desktopNonce = hex(v.desktop_handshake_nonce)
+            let mobileEphPriv = hex(v.mobile_ephemeral_private), mobileEphPub = hex(v.mobile_ephemeral_public)
+            let desktopEphPriv = hex(v.desktop_ephemeral_private), desktopEphPub = hex(v.desktop_ephemeral_public)
             let messageNonce = hex(v.message_nonce)
             let plaintext = hex(v.plaintext), wire = hex(v.wire_ciphertext)
             let sender = Role(rawValue: v.sender)!
 
-            // Public keys derive from the committed privates.
+            // Public keys (identity + ephemeral) derive from the committed privates.
             XCTAssertEqual(try Crypto.publicFromPrivate(mobilePriv), mobilePub, v.name)
             XCTAssertEqual(try Crypto.publicFromPrivate(desktopPriv), desktopPub, v.name)
+            XCTAssertEqual(try Crypto.publicFromPrivate(mobileEphPriv), mobileEphPub, v.name)
+            XCTAssertEqual(try Crypto.publicFromPrivate(desktopEphPriv), desktopEphPub, v.name)
 
-            // Directional keys match (X25519 + HKDF-SHA256).
-            let shared = try Crypto.sharedSecret(myPriv: mobilePriv, peerPub: desktopPub)
-            XCTAssertEqual(Crypto.deriveKey(shared: shared, mobileNonce: mobileNonce, desktopNonce: desktopNonce, dir: "m2d"), hex(v.key_m2d), v.name)
-            XCTAssertEqual(Crypto.deriveKey(shared: shared, mobileNonce: mobileNonce, desktopNonce: desktopNonce, dir: "d2m"), hex(v.key_d2m), v.name)
-
-            // Re-seal with the fixed nonce → must equal the committed wire bytes.
-            let senderPriv = sender == .mobile ? mobilePriv : desktopPriv
-            let peerPub = sender == .mobile ? desktopPub : mobilePub
-            let senderSession = try Session.create(myPriv: senderPriv, peerPub: peerPub, role: sender, mobileNonce: mobileNonce, desktopNonce: desktopNonce)
+            // Re-seal with the fixed nonce → must equal the committed wire bytes
+            // (exercises the full four-DH key derivation + AEAD).
+            let senderSession: Session = try {
+                if sender == .mobile {
+                    return try Session.create(idPriv: mobilePriv, peerIdPub: desktopPub,
+                                              ephPriv: mobileEphPriv, peerEphPub: desktopEphPub, role: .mobile)
+                }
+                return try Session.create(idPriv: desktopPriv, peerIdPub: mobilePub,
+                                          ephPriv: desktopEphPriv, peerEphPub: mobileEphPub, role: .desktop)
+            }()
             let produced = try senderSession.sealWith(nonce: messageNonce, id: v.id, ts: v.ts, plaintext: plaintext)
             XCTAssertEqual(produced, wire, "wire ciphertext: \(v.name)")
 
             // Peer opens it back to plaintext.
-            let peerRole: Role = sender == .mobile ? .desktop : .mobile
-            let recvPriv = sender == .mobile ? desktopPriv : mobilePriv
-            let recvPeer = sender == .mobile ? mobilePub : desktopPub
-            let recvSession = try Session.create(myPriv: recvPriv, peerPub: recvPeer, role: peerRole, mobileNonce: mobileNonce, desktopNonce: desktopNonce)
+            let recvSession: Session = try {
+                if sender == .mobile {
+                    return try Session.create(idPriv: desktopPriv, peerIdPub: mobilePub,
+                                              ephPriv: desktopEphPriv, peerEphPub: mobileEphPub, role: .desktop)
+                }
+                return try Session.create(idPriv: mobilePriv, peerIdPub: desktopPub,
+                                          ephPriv: mobileEphPriv, peerEphPub: desktopEphPub, role: .mobile)
+            }()
             XCTAssertEqual(try recvSession.open(id: v.id, ts: v.ts, wire: wire), plaintext, "decrypt: \(v.name)")
         }
     }
