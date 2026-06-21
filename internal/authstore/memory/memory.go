@@ -4,12 +4,14 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/lley154/secure-gateway/internal/token"
 )
 
 // Store is a concurrency-safe in-memory authstore.Store.
@@ -211,6 +213,42 @@ func (s *Store) GetDevice(_ context.Context, id string) (authstore.Device, error
 	return d, nil
 }
 
+func (s *Store) CountDevicesByAccount(_ context.Context, accountID string) (int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	n := 0
+	for _, d := range s.devices {
+		if d.AccountID == accountID {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) FindDeviceByAccountRoleKey(_ context.Context, accountID string, role token.Role, publicKey []byte) (authstore.Device, error) {
+	if len(publicKey) == 0 {
+		return authstore.Device{}, authstore.ErrNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	// Deterministic pick (lowest id) so re-registration is stable across calls.
+	var match *authstore.Device
+	for _, d := range s.devices {
+		if d.AccountID == accountID && d.Role == role && bytes.Equal(d.PublicKey, publicKey) {
+			if match == nil || d.ID < match.ID {
+				dc := d
+				match = &dc
+			}
+		}
+	}
+	if match == nil {
+		return authstore.Device{}, authstore.ErrNotFound
+	}
+	out := *match
+	out.PublicKey = cloneBytes(out.PublicKey)
+	return out, nil
+}
+
 // --- Pairings ---
 
 func (s *Store) CreatePairing(_ context.Context, p authstore.Pairing) error {
@@ -218,6 +256,27 @@ func (s *Store) CreatePairing(_ context.Context, p authstore.Pairing) error {
 	defer s.mu.Unlock()
 	if _, ok := s.pairings[p.PairID]; ok {
 		return authstore.ErrConflict
+	}
+	s.pairings[p.PairID] = p
+	return nil
+}
+
+func (s *Store) CreatePairingWithinCapacity(_ context.Context, p authstore.Pairing, maxPairs int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.pairings[p.PairID]; ok {
+		return authstore.ErrConflict
+	}
+	// Count and insert under the same lock, so concurrent completions cannot
+	// both observe a free slot (SG-16).
+	inUse := 0
+	for _, ep := range s.pairings {
+		if ep.LicenseID == p.LicenseID && ep.Status == authstore.PairingActive {
+			inUse++
+		}
+	}
+	if inUse >= maxPairs {
+		return authstore.ErrCapacityExceeded
 	}
 	s.pairings[p.PairID] = p
 	return nil

@@ -21,6 +21,9 @@ public final class Credentials {
 
     public Credentials(String wsUrl, Role role, byte[] myPrivateKey, byte[] peerPublicKey,
                        TokenStore tokens, AuthClient auth) {
+        // Enforce wss:// (except loopback/RFC1918 for LAN dev) before the relay dial, so a
+        // malicious QR cannot downgrade the connection JWT (Bearer header) to cleartext (SG-14).
+        EndpointValidator.requireSecureRelay(wsUrl);
         this.wsUrl = wsUrl;
         this.role = role;
         this.myPrivateKey = myPrivateKey.clone();

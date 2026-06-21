@@ -65,6 +65,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    # Drop the default capability set and re-add only what the alpine entrypoint
+    # needs: it starts as root to chown/init the data volume, then su-exec drops to
+    # the unprivileged postgres user. CHOWN/DAC_OVERRIDE/FOWNER cover the volume
+    # prep; SETUID/SETGID cover the privilege drop (SG-20).
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     security_opt:
       - no-new-privileges:true
 

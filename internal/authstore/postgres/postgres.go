@@ -265,6 +265,27 @@ func (s *Store) GetDevice(ctx context.Context, id string) (authstore.Device, err
 	return d, nil
 }
 
+func (s *Store) CountDevicesByAccount(ctx context.Context, accountID string) (int, error) {
+	var n int
+	err := s.pool.QueryRow(ctx, `SELECT count(*) FROM devices WHERE account_id=$1`, accountID).Scan(&n)
+	return n, mapErr(err)
+}
+
+func (s *Store) FindDeviceByAccountRoleKey(ctx context.Context, accountID string, role token.Role, publicKey []byte) (authstore.Device, error) {
+	if len(publicKey) == 0 {
+		return authstore.Device{}, authstore.ErrNotFound
+	}
+	const q = `SELECT id, account_id, role, public_key, created_at FROM devices
+		WHERE account_id=$1 AND role=$2 AND public_key=$3 ORDER BY created_at LIMIT 1`
+	var d authstore.Device
+	var r string
+	if err := s.pool.QueryRow(ctx, q, accountID, string(role), publicKey).Scan(&d.ID, &d.AccountID, &r, &d.PublicKey, &d.CreatedAt); err != nil {
+		return authstore.Device{}, mapErr(err)
+	}
+	d.Role = token.Role(r)
+	return d, nil
+}
+
 // --- Pairings ---
 
 func (s *Store) CreatePairing(ctx context.Context, p authstore.Pairing) error {
@@ -272,6 +293,36 @@ func (s *Store) CreatePairing(ctx context.Context, p authstore.Pairing) error {
 		VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7, now()))`
 	_, err := s.pool.Exec(ctx, q, p.PairID, p.LicenseID, p.AccountID, p.MobileDeviceID, p.DesktopDeviceID, string(p.Status), nilIfZero(p.CreatedAt))
 	return mapErr(err)
+}
+
+func (s *Store) CreatePairingWithinCapacity(ctx context.Context, p authstore.Pairing, maxPairs int) (err error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return mapErr(err)
+	}
+	// Roll back unless we explicitly commit; rollback after commit is a no-op.
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Lock the license row so concurrent completions for the same license
+	// serialize here, closing the TOCTOU between the count and the insert (SG-16).
+	var licID string
+	if err := tx.QueryRow(ctx, `SELECT id FROM licenses WHERE id=$1 FOR UPDATE`, p.LicenseID).Scan(&licID); err != nil {
+		return mapErr(err)
+	}
+	var inUse int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM pairings WHERE license_id=$1 AND status=$2`,
+		p.LicenseID, string(authstore.PairingActive)).Scan(&inUse); err != nil {
+		return mapErr(err)
+	}
+	if inUse >= maxPairs {
+		return authstore.ErrCapacityExceeded
+	}
+	const q = `INSERT INTO pairings (pair_id, license_id, account_id, mobile_device_id, desktop_device_id, status, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6, COALESCE($7, now()))`
+	if _, err := tx.Exec(ctx, q, p.PairID, p.LicenseID, p.AccountID, p.MobileDeviceID, p.DesktopDeviceID, string(p.Status), nilIfZero(p.CreatedAt)); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit(ctx))
 }
 
 const pairCols = `pair_id, license_id, account_id, mobile_device_id, desktop_device_id, status, created_at`

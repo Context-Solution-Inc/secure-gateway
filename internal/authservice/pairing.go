@@ -78,7 +78,7 @@ func (s *Service) handleCreatePairingToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if !rePair {
-		if ok, err := s.capacityAvailable(ctx, lic); err != nil {
+		if ok, _, err := s.capacityAvailable(ctx, lic); err != nil {
 			writeErr(w, http.StatusInternalServerError, "store_error")
 			return
 		} else if !ok {
@@ -190,17 +190,24 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	pairID := authstore.NewID("pair")
+	var maxPairs int
 	if rePair {
 		pairID = existing.PairID
 	} else {
-		// New pairing: enforce capacity (pairs in use < max_pairs, FR-2.2).
-		if ok, err := s.capacityAvailable(ctx, lic); err != nil {
+		// New pairing: capacity gate (pairs in use < max_pairs, FR-2.2). This
+		// advisory pre-check fails fast before the token is consumed; the
+		// authoritative count+insert at CreatePairingWithinCapacity below is
+		// atomic, closing the TOCTOU under concurrent completions (SG-16).
+		ok, mp, err := s.capacityAvailable(ctx, lic)
+		if err != nil {
 			writeErr(w, http.StatusInternalServerError, "store_error")
 			return
-		} else if !ok {
+		}
+		if !ok {
 			writeErr(w, http.StatusConflict, "capacity_exceeded")
 			return
 		}
+		maxPairs = mp
 	}
 
 	// Consume the token first (atomic single-use) so a replayed completion can
@@ -245,7 +252,13 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 			MobileDeviceID: mobile.ID, DesktopDeviceID: desktop.ID,
 			Status: authstore.PairingActive, CreatedAt: s.now(),
 		}
-		if err := s.store.CreatePairing(ctx, p); err != nil {
+		// Atomic count+insert: refuses to over-subscribe max_pairs even when two
+		// completions for distinct tokens race on the same license (SG-16).
+		if err := s.store.CreatePairingWithinCapacity(ctx, p, maxPairs); err != nil {
+			if errors.Is(err, authstore.ErrCapacityExceeded) {
+				writeErr(w, http.StatusConflict, "capacity_exceeded")
+				return
+			}
 			writeErr(w, http.StatusInternalServerError, "store_error")
 			return
 		}
@@ -343,17 +356,18 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 // --- helpers ---
 
 // capacityAvailable reports whether the license has a free pair slot
-// (pairs in use < max_pairs, FR-2.2).
-func (s *Service) capacityAvailable(ctx context.Context, lic authstore.License) (bool, error) {
+// (pairs in use < max_pairs, FR-2.2) and returns the license's max_pairs so the
+// caller can pass it to the atomic CreatePairingWithinCapacity gate (SG-16).
+func (s *Service) capacityAvailable(ctx context.Context, lic authstore.License) (ok bool, maxPairs int, err error) {
 	sub, err := s.store.GetSubscription(ctx, lic.SubscriptionID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	inUse, err := s.store.ActivePairCount(ctx, lic.ID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
-	return inUse < sub.MaxPairs, nil
+	return inUse < sub.MaxPairs, sub.MaxPairs, nil
 }
 
 // activePairingForDesktop finds an active pairing for the license bound to the

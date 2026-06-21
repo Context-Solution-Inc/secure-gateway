@@ -22,6 +22,7 @@ func Run(t *testing.T, newStore func(t *testing.T) authstore.Store) {
 	t.Run("Licenses", func(t *testing.T) { testLicenses(t, newStore(t)) })
 	t.Run("Devices", func(t *testing.T) { testDevices(t, newStore(t)) })
 	t.Run("Pairings", func(t *testing.T) { testPairings(t, newStore(t)) })
+	t.Run("PairingCapacity", func(t *testing.T) { testPairingCapacity(t, newStore(t)) })
 	t.Run("RefreshTokens", func(t *testing.T) { testRefreshTokens(t, newStore(t)) })
 	t.Run("PairingTokens", func(t *testing.T) { testPairingTokens(t, newStore(t)) })
 	t.Run("CheckoutClaims", func(t *testing.T) { testCheckoutClaims(t, newStore(t)) })
@@ -136,6 +137,41 @@ func testDevices(t *testing.T, s authstore.Store) {
 	if _, err := s.GetDevice(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
 		t.Fatalf("GetDevice missing: want ErrNotFound, got %v", err)
 	}
+
+	// Per-account device cap support (SG-10): count is account-scoped.
+	if err := s.UpsertDevice(ctx, authstore.Device{ID: "dev_2", AccountID: "acct_1", Role: token.RoleDesktop, PublicKey: []byte{4, 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertDevice(ctx, authstore.Device{ID: "dev_3", AccountID: "acct_other", Role: token.RoleMobile, PublicKey: []byte{6}}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.CountDevicesByAccount(ctx, "acct_1"); err != nil || n != 2 {
+		t.Fatalf("CountDevicesByAccount(acct_1): got %d err=%v, want 2", n, err)
+	}
+	if n, err := s.CountDevicesByAccount(ctx, "acct_none"); err != nil || n != 0 {
+		t.Fatalf("CountDevicesByAccount(acct_none): got %d err=%v, want 0", n, err)
+	}
+
+	// Idempotent re-registration lookup (SG-10): match on account+role+public_key.
+	found, err := s.FindDeviceByAccountRoleKey(ctx, "acct_1", token.RoleMobile, []byte{1, 2, 3})
+	if err != nil || found.ID != "dev_1" {
+		t.Fatalf("FindDeviceByAccountRoleKey: got %+v err=%v, want dev_1", found, err)
+	}
+	// Mutating the returned slice must not affect stored state.
+	found.PublicKey[0] = 9
+	if again, _ := s.FindDeviceByAccountRoleKey(ctx, "acct_1", token.RoleMobile, []byte{1, 2, 3}); again.PublicKey[0] != 1 {
+		t.Fatalf("FindDeviceByAccountRoleKey returned slice aliases stored state: %v", again.PublicKey)
+	}
+	// Wrong role, wrong key, and empty key never match.
+	if _, err := s.FindDeviceByAccountRoleKey(ctx, "acct_1", token.RoleDesktop, []byte{1, 2, 3}); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("FindDeviceByAccountRoleKey wrong role: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.FindDeviceByAccountRoleKey(ctx, "acct_1", token.RoleMobile, []byte{9, 9}); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("FindDeviceByAccountRoleKey wrong key: want ErrNotFound, got %v", err)
+	}
+	if _, err := s.FindDeviceByAccountRoleKey(ctx, "acct_1", token.RoleMobile, nil); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("FindDeviceByAccountRoleKey empty key: want ErrNotFound, got %v", err)
+	}
 }
 
 func testPairings(t *testing.T, s authstore.Store) {
@@ -177,6 +213,44 @@ func testPairings(t *testing.T, s authstore.Store) {
 	byLic, _ = s.ListActivePairingsByLicense(ctx, "lic_1")
 	if len(byLic) != 0 {
 		t.Fatalf("revoked pairing still listed active: %d", len(byLic))
+	}
+}
+
+// testPairingCapacity covers the atomic capacity gate (SG-16): the count and the
+// insert happen in one transaction, so a license can never exceed max_pairs.
+func testPairingCapacity(t *testing.T, s authstore.Store) {
+	ctx := context.Background()
+	// The Postgres gate locks the license row (FOR UPDATE), so it must exist.
+	if err := s.CreateLicense(ctx, authstore.License{ID: "lic_cap", AccountID: "acct_cap", SubscriptionID: "sub_cap", Status: authstore.LicenseActive}); err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string) authstore.Pairing {
+		return authstore.Pairing{PairID: id, LicenseID: "lic_cap", AccountID: "acct_cap", MobileDeviceID: "m_" + id, DesktopDeviceID: "d_" + id, Status: authstore.PairingActive}
+	}
+	const maxPairs = 2
+	if err := s.CreatePairingWithinCapacity(ctx, mk("cap_a"), maxPairs); err != nil {
+		t.Fatalf("first within-capacity insert: %v", err)
+	}
+	if err := s.CreatePairingWithinCapacity(ctx, mk("cap_b"), maxPairs); err != nil {
+		t.Fatalf("second within-capacity insert: %v", err)
+	}
+	// Third exceeds max_pairs=2 and must be refused.
+	if err := s.CreatePairingWithinCapacity(ctx, mk("cap_c"), maxPairs); !errors.Is(err, authstore.ErrCapacityExceeded) {
+		t.Fatalf("over-capacity insert: want ErrCapacityExceeded, got %v", err)
+	}
+	if n, _ := s.ActivePairCount(ctx, "lic_cap"); n != 2 {
+		t.Fatalf("ActivePairCount after over-capacity reject: got %d, want 2", n)
+	}
+	// A duplicate pair_id is a conflict, distinct from capacity.
+	if err := s.CreatePairingWithinCapacity(ctx, mk("cap_a"), maxPairs); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("duplicate within-capacity insert: want ErrConflict, got %v", err)
+	}
+	// Freeing a slot lets a new pairing in again.
+	if err := s.SetPairingStatus(ctx, "cap_a", authstore.PairingRevoked); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreatePairingWithinCapacity(ctx, mk("cap_c"), maxPairs); err != nil {
+		t.Fatalf("insert after freeing a slot: %v", err)
 	}
 }
 
