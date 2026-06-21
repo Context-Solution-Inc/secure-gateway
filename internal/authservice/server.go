@@ -15,6 +15,7 @@ import (
 // ServerConfig is the HTTP/TLS lifecycle configuration for the auth server.
 type ServerConfig struct {
 	ListenAddr    string
+	MetricsAddr   string // AUTH_METRICS_ADDR; empty => /metrics on the main listener
 	TLSCertFile   string
 	TLSKeyFile    string
 	TLSMinVersion string // "1.2" | "1.3"
@@ -35,6 +36,9 @@ type Server struct {
 	cfg  ServerConfig
 	rl   *rateLimiters
 	http *http.Server
+	// metricsHTTP serves /metrics on a separate private listener when
+	// AUTH_METRICS_ADDR is set; nil when metrics are on the main mux (SG-06/SG-11).
+	metricsHTTP *http.Server
 }
 
 // NewServer builds the routed HTTP server for svc.
@@ -43,7 +47,12 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", svc.handleHealth)
-	mux.Handle("GET /metrics", promhttp.HandlerFor(svc.metrics.Registry, promhttp.HandlerOpts{}))
+	// /metrics is exposed on the main (edge-proxied) listener only when no private
+	// metrics listener is configured; otherwise it moves to AUTH_METRICS_ADDR and
+	// is kept off the public API surface (SG-06/SG-11).
+	if cfg.MetricsAddr == "" {
+		mux.Handle("GET /metrics", promhttp.HandlerFor(svc.metrics.Registry, promhttp.HandlerOpts{}))
+	}
 	mux.HandleFunc("GET /.well-known/jwks.json", svc.handleJWKS)
 	mux.HandleFunc("POST /v1/webhooks/stripe", svc.handleWebhook)
 	mux.HandleFunc("POST /v1/accounts", svc.handleCreateAccount)
@@ -75,6 +84,17 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	if cfg.MetricsAddr != "" {
+		mmux := http.NewServeMux()
+		mmux.HandleFunc("GET /healthz", svc.handleHealth)
+		mmux.Handle("GET /metrics", promhttp.HandlerFor(svc.metrics.Registry, promhttp.HandlerOpts{}))
+		s.metricsHTTP = &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           mmux,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
+	}
 	return s, nil
 }
 
@@ -90,6 +110,15 @@ func (s *Server) tlsConfig() (*tls.Config, error) {
 func (s *Server) Run(ctx context.Context) error {
 	if s.rl.ip != nil {
 		go s.rl.sweep(ctx)
+	}
+
+	if s.metricsHTTP != nil {
+		go func() {
+			if err := s.metricsHTTP.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				s.svc.log.Error("metrics listener failed", "addr", s.cfg.MetricsAddr, "err", err.Error())
+			}
+		}()
+		s.svc.log.Info("auth metrics listening (private)", "addr", s.cfg.MetricsAddr)
 	}
 
 	errCh := make(chan error, 1)
@@ -111,6 +140,9 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		sctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownDrain)
 		defer cancel()
+		if s.metricsHTTP != nil {
+			_ = s.metricsHTTP.Shutdown(sctx)
+		}
 		if err := s.http.Shutdown(sctx); err != nil {
 			return fmt.Errorf("graceful shutdown: %w", err)
 		}

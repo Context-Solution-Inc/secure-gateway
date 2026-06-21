@@ -28,14 +28,12 @@ public final class Crypto {
 
     /** X25519 key length and derived AEAD key length. */
     public static final int KEY_SIZE = 32;
-    /** Per-session handshake nonce length each side contributes to the HKDF salt. */
-    public static final int HANDSHAKE_NONCE_SIZE = 32;
     /** XChaCha20-Poly1305 nonce length, prepended to the ciphertext. */
     public static final int NONCE_SIZE = 24;
     /** Poly1305 authentication tag length. */
     public static final int TAG_SIZE = 16;
 
-    static final String INFO_PREFIX = "secure-gateway/e2ee/v1|";
+    static final String INFO_PREFIX = "secure-gateway/e2ee/v2|";
     static final String DIR_M2D = "m2d"; // mobile -> desktop
     static final String DIR_D2M = "d2m"; // desktop -> mobile
 
@@ -72,13 +70,6 @@ public final class Crypto {
             throw new IllegalStateException("crypto: scalarmult_base failed");
         }
         return pub;
-    }
-
-    /** Fresh 32-byte session handshake nonce. */
-    public static byte[] newHandshakeNonce() {
-        byte[] n = new byte[HANDSHAKE_NONCE_SIZE];
-        RANDOM.nextBytes(n);
-        return n;
     }
 
     /**

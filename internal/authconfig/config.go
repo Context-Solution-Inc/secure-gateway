@@ -32,8 +32,9 @@ const (
 // Config is the fully-resolved auth-service configuration.
 type Config struct {
 	// Server
-	ListenAddr string // AUTH_LISTEN_ADDR
-	InstanceID string // AUTH_INSTANCE_ID; auto-generated when empty
+	ListenAddr  string // AUTH_LISTEN_ADDR
+	MetricsAddr string // AUTH_METRICS_ADDR; empty => /metrics on the main listener, else a private listener (SG-06/SG-11)
+	InstanceID  string // AUTH_INSTANCE_ID; auto-generated when empty
 
 	// TLS
 	TLSCertFile   string // AUTH_TLS_CERT_FILE; empty => plain HTTP (behind a TLS-terminating proxy)
@@ -114,6 +115,7 @@ func Load() (*Config, error) { return loadFrom(os.Getenv) }
 func loadFrom(getenv getenvFn) (*Config, error) {
 	c := &Config{
 		ListenAddr:          str(getenv, "AUTH_LISTEN_ADDR", ":8080"),
+		MetricsAddr:         str(getenv, "AUTH_METRICS_ADDR", ""),
 		InstanceID:          str(getenv, "AUTH_INSTANCE_ID", ""),
 		TLSCertFile:         str(getenv, "AUTH_TLS_CERT_FILE", ""),
 		TLSKeyFile:          str(getenv, "AUTH_TLS_KEY_FILE", ""),

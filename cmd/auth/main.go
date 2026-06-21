@@ -107,7 +107,8 @@ func run() error {
 	})
 
 	srv, err := authservice.NewServer(svc, authservice.ServerConfig{
-		ListenAddr: cfg.ListenAddr, TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
+		ListenAddr: cfg.ListenAddr, MetricsAddr: cfg.MetricsAddr,
+		TLSCertFile: cfg.TLSCertFile, TLSKeyFile: cfg.TLSKeyFile,
 		TLSMinVersion: cfg.TLSMinVersion, ShutdownDrain: cfg.ShutdownDrain,
 		TrustProxy:             cfg.TrustProxy,
 		RateLimitEnabled:       cfg.RateLimitEnabled,

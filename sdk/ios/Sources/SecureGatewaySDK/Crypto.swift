@@ -21,18 +21,19 @@ public struct KeyPair {
     public let publicKey: Data   // 32 bytes
 }
 
-public enum CryptoError: Error {
+public enum CryptoError: Error, Equatable {
     case ecdhFailed
     case sealFailed
     case openFailed
     case badLength
+    case replay // SG-02: envelope id already delivered on this session
+    case stale  // SG-02: envelope ts is outside the replay window
 }
 
 public enum Crypto {
     public static let keySize = 32
-    public static let handshakeNonceSize = 32
     public static let nonceSize = 24
-    static let infoPrefix = "secure-gateway/e2ee/v1|"
+    static let infoPrefix = "secure-gateway/e2ee/v2|"
 
     private static let sodium = Sodium()
 
@@ -54,12 +55,11 @@ public enum Crypto {
         return secret.withUnsafeBytes { Data($0) }
     }
 
-    /// HKDF-SHA256: salt = mobileNonce||desktopNonce, info = "secure-gateway/e2ee/v1|"+dir.
-    static func deriveKey(shared: Data, mobileNonce: Data, desktopNonce: Data, dir: String) -> Data {
-        let salt = mobileNonce + desktopNonce
+    /// HKDF-SHA256 over the keying material, info = "secure-gateway/e2ee/v2|"+dir.
+    static func deriveKey(ikm: Data, salt: Data, dir: String) -> Data {
         let info = Data((infoPrefix + dir).utf8)
         let key = HKDF<SHA256>.deriveKey(
-            inputKeyMaterial: SymmetricKey(data: shared),
+            inputKeyMaterial: SymmetricKey(data: ikm),
             salt: salt,
             info: info,
             outputByteCount: keySize)
@@ -101,9 +101,5 @@ public enum Crypto {
         var bytes = [UInt8](repeating: 0, count: nonceSize)
         _ = sodium.randomBytes.buf(length: nonceSize).map { bytes = $0 }
         return Data(bytes)
-    }
-
-    public static func newHandshakeNonce() -> Data {
-        Data(sodium.randomBytes.buf(length: handshakeNonceSize) ?? [UInt8](repeating: 0, count: handshakeNonceSize))
     }
 }

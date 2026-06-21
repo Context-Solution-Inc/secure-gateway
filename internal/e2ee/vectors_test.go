@@ -28,34 +28,36 @@ type schemeDoc struct {
 }
 
 type vector struct {
-	Name                  string `json:"name"`
-	Sender                string `json:"sender"` // "mobile" | "desktop"
-	MobilePrivate         string `json:"mobile_private"`
-	MobilePublic          string `json:"mobile_public"`
-	DesktopPrivate        string `json:"desktop_private"`
-	DesktopPublic         string `json:"desktop_public"`
-	MobileHandshakeNonce  string `json:"mobile_handshake_nonce"`
-	DesktopHandshakeNonce string `json:"desktop_handshake_nonce"`
-	KeyM2D                string `json:"key_m2d"`
-	KeyD2M                string `json:"key_d2m"`
-	MessageNonce          string `json:"message_nonce"`
-	ID                    string `json:"id"`
-	TS                    int64  `json:"ts"`
-	Plaintext             string `json:"plaintext"`       // hex
-	WireCiphertext        string `json:"wire_ciphertext"` // hex: nonce(24) || aead_ct
+	Name                    string `json:"name"`
+	Sender                  string `json:"sender"` // "mobile" | "desktop"
+	MobilePrivate           string `json:"mobile_private"`
+	MobilePublic            string `json:"mobile_public"`
+	DesktopPrivate          string `json:"desktop_private"`
+	DesktopPublic           string `json:"desktop_public"`
+	MobileEphemeralPrivate  string `json:"mobile_ephemeral_private"`
+	MobileEphemeralPublic   string `json:"mobile_ephemeral_public"`
+	DesktopEphemeralPrivate string `json:"desktop_ephemeral_private"`
+	DesktopEphemeralPublic  string `json:"desktop_ephemeral_public"`
+	KeyM2D                  string `json:"key_m2d"`
+	KeyD2M                  string `json:"key_d2m"`
+	MessageNonce            string `json:"message_nonce"`
+	ID                      string `json:"id"`
+	TS                      int64  `json:"ts"`
+	Plaintext               string `json:"plaintext"`       // hex
+	WireCiphertext          string `json:"wire_ciphertext"` // hex: nonce(24) || aead_ct
 }
 
 // vectorInputs are the deterministic inputs for each vector; outputs (public
 // keys, derived keys, ciphertext) are computed by the implementation.
 type vectorInputs struct {
-	name                      string
-	sender                    token.Role
-	mobilePriv, desktopPriv   [KeySize]byte
-	mobileNonce, desktopNonce []byte
-	messageNonce              []byte
-	id                        string
-	ts                        int64
-	plaintext                 []byte
+	name                          string
+	sender                        token.Role
+	mobilePriv, desktopPriv       [KeySize]byte // long-term identity keys
+	mobileEphPriv, desktopEphPriv [KeySize]byte // per-session ephemeral keys
+	messageNonce                  []byte
+	id                            string
+	ts                            int64
+	plaintext                     []byte
 }
 
 func fixed(b byte) [KeySize]byte {
@@ -77,33 +79,33 @@ func fixedSlice(b byte, n int) []byte {
 func vectorInputSet() []vectorInputs {
 	mPriv := fixed(0x01)
 	dPriv := fixed(0x21)
-	mNonce := fixedSlice(0x40, HandshakeNonceSize)
-	dNonce := fixedSlice(0x70, HandshakeNonceSize)
+	mEph := fixed(0x50) // mobile ephemeral
+	dEph := fixed(0x80) // desktop ephemeral
 	return []vectorInputs{
 		{
 			name: "mobile_to_desktop_basic", sender: token.RoleMobile,
-			mobilePriv: mPriv, desktopPriv: dPriv, mobileNonce: mNonce, desktopNonce: dNonce,
+			mobilePriv: mPriv, desktopPriv: dPriv, mobileEphPriv: mEph, desktopEphPriv: dEph,
 			messageNonce: fixedSlice(0xa0, NonceSize),
 			id:           "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", ts: 1765432100123,
 			plaintext: []byte("hello desktop, this is the mobile"),
 		},
 		{
 			name: "desktop_to_mobile_basic", sender: token.RoleDesktop,
-			mobilePriv: mPriv, desktopPriv: dPriv, mobileNonce: mNonce, desktopNonce: dNonce,
+			mobilePriv: mPriv, desktopPriv: dPriv, mobileEphPriv: mEph, desktopEphPriv: dEph,
 			messageNonce: fixedSlice(0xb0, NonceSize),
 			id:           "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c", ts: 1765432100456,
 			plaintext: []byte("ack from the desktop side"),
 		},
 		{
 			name: "mobile_to_desktop_empty", sender: token.RoleMobile,
-			mobilePriv: mPriv, desktopPriv: dPriv, mobileNonce: mNonce, desktopNonce: dNonce,
+			mobilePriv: mPriv, desktopPriv: dPriv, mobileEphPriv: mEph, desktopEphPriv: dEph,
 			messageNonce: fixedSlice(0xc0, NonceSize),
 			id:           "empty-1", ts: 1,
 			plaintext: []byte{},
 		},
 		{
 			name: "mobile_to_desktop_binary", sender: token.RoleMobile,
-			mobilePriv: mPriv, desktopPriv: dPriv, mobileNonce: mNonce, desktopNonce: dNonce,
+			mobilePriv: mPriv, desktopPriv: dPriv, mobileEphPriv: mEph, desktopEphPriv: dEph,
 			messageNonce: fixedSlice(0xd0, NonceSize),
 			id:           "binary-1", ts: 9007199254740991,
 			plaintext: []byte{0x00, 0x01, 0x02, 0xff, 0xfe, 0x00, 0x80, 0x7f},
@@ -116,41 +118,30 @@ const vectorsPath = "testdata/vectors.json"
 // buildVector computes the full vector (outputs included) from inputs.
 func buildVector(t *testing.T, in vectorInputs) vector {
 	t.Helper()
-	mPub, err := PublicFromPrivate(in.mobilePriv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dPub, err := PublicFromPrivate(in.desktopPriv)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mPub := pub(t, in.mobilePriv)
+	dPub := pub(t, in.desktopPriv)
+	mEphPub := pub(t, in.mobileEphPriv)
+	dEphPub := pub(t, in.desktopEphPriv)
 
-	// Sender's session seals; the seal uses sendKey for the sender's role.
-	var myPriv, peerPub [KeySize]byte
-	if in.sender == token.RoleMobile {
-		myPriv, peerPub = in.mobilePriv, dPub
-	} else {
-		myPriv, peerPub = in.desktopPriv, mPub
-	}
-	sender, err := NewSession(myPriv, peerPub, in.sender, in.mobileNonce, in.desktopNonce)
+	// Directional keys are independent of sender role: the mobile session seals
+	// with K_m2d and opens with K_d2m, so read both off a mobile session.
+	mobile, err := NewSession(in.mobilePriv, dPub, in.mobileEphPriv, dEphPub, token.RoleMobile)
 	if err != nil {
 		t.Fatal(err)
+	}
+	km2d, kd2m := mobile.sendKey, mobile.recvKey
+
+	// The sender's session seals with the fixed message nonce.
+	var sender *Session
+	if in.sender == token.RoleMobile {
+		sender = mobile
+	} else {
+		sender, err = NewSession(in.desktopPriv, mPub, in.desktopEphPriv, mEphPub, token.RoleDesktop)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	wire, err := sender.sealWith(in.messageNonce, in.id, in.ts, in.plaintext)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Directional keys are independent of sender role; derive both for the file.
-	shared, err := x25519(in.mobilePriv, dPub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	km2d, err := deriveKey(shared, in.mobileNonce, in.desktopNonce, dirM2D)
-	if err != nil {
-		t.Fatal(err)
-	}
-	kd2m, err := deriveKey(shared, in.mobileNonce, in.desktopNonce, dirD2M)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,11 +150,23 @@ func buildVector(t *testing.T, in vectorInputs) vector {
 		Name: in.name, Sender: string(in.sender),
 		MobilePrivate: hex.EncodeToString(in.mobilePriv[:]), MobilePublic: hex.EncodeToString(mPub[:]),
 		DesktopPrivate: hex.EncodeToString(in.desktopPriv[:]), DesktopPublic: hex.EncodeToString(dPub[:]),
-		MobileHandshakeNonce: hex.EncodeToString(in.mobileNonce), DesktopHandshakeNonce: hex.EncodeToString(in.desktopNonce),
+		MobileEphemeralPrivate: hex.EncodeToString(in.mobileEphPriv[:]), MobileEphemeralPublic: hex.EncodeToString(mEphPub[:]),
+		DesktopEphemeralPrivate: hex.EncodeToString(in.desktopEphPriv[:]), DesktopEphemeralPublic: hex.EncodeToString(dEphPub[:]),
 		KeyM2D: hex.EncodeToString(km2d[:]), KeyD2M: hex.EncodeToString(kd2m[:]),
 		MessageNonce: hex.EncodeToString(in.messageNonce), ID: in.id, TS: in.ts,
 		Plaintext: hex.EncodeToString(in.plaintext), WireCiphertext: hex.EncodeToString(wire),
 	}
+}
+
+// pub is a test helper: the X25519 public key for a private key, failing the test
+// on error.
+func pub(t *testing.T, priv [KeySize]byte) [KeySize]byte {
+	t.Helper()
+	p, err := PublicFromPrivate(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
 }
 
 // TestWriteVectors regenerates testdata/vectors.json from the fixed inputs. It is
@@ -175,10 +178,10 @@ func TestWriteVectors(t *testing.T) {
 	}
 	f := vectorFile{
 		Scheme: schemeDoc{
-			KDF:  "HKDF-SHA256",
+			KDF:  "HKDF-SHA256 over ikm = ss || ee || md || dm (ss=DH(mIdentity,dIdentity), ee=DH(mEphemeral,dEphemeral), md=DH(mIdentity,dEphemeral), dm=DH(dIdentity,mEphemeral))",
 			AEAD: "XChaCha20-Poly1305 (24-byte nonce)",
-			Salt: "mobile_handshake_nonce || desktop_handshake_nonce",
-			Info: "secure-gateway/e2ee/v1|<dir>  (dir = m2d for mobile->desktop, d2m for desktop->mobile)",
+			Salt: "mobile_ephemeral_public || desktop_ephemeral_public",
+			Info: "secure-gateway/e2ee/v2|<dir>  (dir = m2d for mobile->desktop, d2m for desktop->mobile)",
 			AAD:  "utf8(id) || big-endian uint64(ts)",
 			Wire: "message_nonce(24) || aead_ciphertext(plaintext + 16-byte tag)",
 		},
@@ -223,42 +226,47 @@ func TestVectors(t *testing.T) {
 			dPriv := mustKey(t, v.DesktopPrivate)
 			mPub := mustKey(t, v.MobilePublic)
 			dPub := mustKey(t, v.DesktopPublic)
-			mNonce := mustHex(t, v.MobileHandshakeNonce)
-			dNonce := mustHex(t, v.DesktopHandshakeNonce)
+			mEphPriv := mustKey(t, v.MobileEphemeralPrivate)
+			dEphPriv := mustKey(t, v.DesktopEphemeralPrivate)
+			mEphPub := mustKey(t, v.MobileEphemeralPublic)
+			dEphPub := mustKey(t, v.DesktopEphemeralPublic)
 
-			// Public keys must derive from the committed private keys.
+			// Public keys (identity and ephemeral) must derive from the committed privs.
 			if got, _ := PublicFromPrivate(mPriv); got != mPub {
 				t.Fatalf("mobile public key mismatch")
 			}
 			if got, _ := PublicFromPrivate(dPriv); got != dPub {
 				t.Fatalf("desktop public key mismatch")
 			}
+			if got, _ := PublicFromPrivate(mEphPriv); got != mEphPub {
+				t.Fatalf("mobile ephemeral public key mismatch")
+			}
+			if got, _ := PublicFromPrivate(dEphPriv); got != dEphPub {
+				t.Fatalf("desktop ephemeral public key mismatch")
+			}
 
-			// Directional keys must match the committed values.
-			shared, err := x25519(mPriv, dPub)
+			// Directional keys must match the committed values (read off a mobile session).
+			mobile, err := NewSession(mPriv, dPub, mEphPriv, dEphPub, token.RoleMobile)
 			if err != nil {
 				t.Fatal(err)
 			}
-			km2d, _ := deriveKey(shared, mNonce, dNonce, dirM2D)
-			kd2m, _ := deriveKey(shared, mNonce, dNonce, dirD2M)
-			if hex.EncodeToString(km2d[:]) != v.KeyM2D {
-				t.Fatalf("K_m2d mismatch: got %x want %s", km2d, v.KeyM2D)
+			if hex.EncodeToString(mobile.sendKey[:]) != v.KeyM2D {
+				t.Fatalf("K_m2d mismatch: got %x want %s", mobile.sendKey, v.KeyM2D)
 			}
-			if hex.EncodeToString(kd2m[:]) != v.KeyD2M {
-				t.Fatalf("K_d2m mismatch: got %x want %s", kd2m, v.KeyD2M)
+			if hex.EncodeToString(mobile.recvKey[:]) != v.KeyD2M {
+				t.Fatalf("K_d2m mismatch: got %x want %s", mobile.recvKey, v.KeyD2M)
 			}
 
 			// Re-seal with the committed nonce must reproduce the wire bytes.
 			senderRole := token.Role(v.Sender)
-			var myPriv, peerPub [KeySize]byte
+			var sender *Session
 			if senderRole == token.RoleMobile {
-				myPriv, peerPub = mPriv, dPub
+				sender = mobile
 			} else {
-				myPriv, peerPub = dPriv, mPub
-			}
-			sender, err := NewSession(myPriv, peerPub, senderRole, mNonce, dNonce)
-			if err != nil {
-				t.Fatal(err)
+				sender, err = NewSession(dPriv, mPub, dEphPriv, mEphPub, token.RoleDesktop)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			wire, err := sender.sealWith(mustHex(t, v.MessageNonce), v.ID, v.TS, mustHex(t, v.Plaintext))
 			if err != nil {
@@ -269,14 +277,12 @@ func TestVectors(t *testing.T) {
 			}
 
 			// The peer must open the committed ciphertext back to the plaintext.
-			peerRole := senderRole.Opposite()
-			var peerPriv, senderPub [KeySize]byte
-			if peerRole == token.RoleMobile {
-				peerPriv, senderPub = mPriv, dPub
+			var peer *Session
+			if senderRole == token.RoleMobile {
+				peer, err = NewSession(dPriv, mPub, dEphPriv, mEphPub, token.RoleDesktop)
 			} else {
-				peerPriv, senderPub = dPriv, mPub
+				peer = mobile
 			}
-			peer, err := NewSession(peerPriv, senderPub, peerRole, mNonce, dNonce)
 			if err != nil {
 				t.Fatal(err)
 			}

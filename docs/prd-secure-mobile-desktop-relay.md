@@ -169,8 +169,8 @@ Policy decision (default): downgrades and payment failure are enforced *graceful
 
 ### FR-5: End-to-end encryption
 
-5.1 Key establishment: X25519 ECDH using the keys exchanged in the QR pairing flow; HKDF-SHA256 derives directional session keys; payloads sealed with **XChaCha20-Poly1305** (AEAD) with a random 24-byte nonce per message, nonce prepended to ciphertext. The envelope `id` and `ts` are bound as AEAD associated data to prevent replay/splicing across messages.
-5.2 Session keys are re-derived per connection session (fresh handshake nonces exchanged in the first encrypted message of a session) so long-lived pairs get forward-secrecy at session granularity. Full per-message ratcheting is out of scope for v1.
+5.1 Key establishment: X25519 ECDH using the long-term identity keys exchanged in the QR pairing flow plus a fresh ephemeral X25519 keypair per session (public half exchanged in the first handshake frame); HKDF-SHA256 over the combined keying material derives directional session keys; payloads sealed with **XChaCha20-Poly1305** (AEAD) with a random 24-byte nonce per message, nonce prepended to ciphertext. The envelope `id` and `ts` are bound as AEAD associated data so they cannot be tampered with or spliced onto a different ciphertext. Verbatim replay of a whole envelope is prevented by a per-session anti-replay window on the receive side (reject already-seen ids and timestamps older than the window).
+5.2 Session keys are derived per connection session by mixing four X25519 shared secrets (Noise-KK style) into the HKDF input keying material: `ss` (identity↔identity, authenticates the peer), `ee` (ephemeral↔ephemeral, provides forward secrecy), and the two cross terms `md`/`dm`. Because the ephemeral private keys are discarded after the session, **this provides forward secrecy (FR-5.2):** compromise of a device's long-term identity key does not expose recorded past/future session traffic. Full per-message ratcheting remains out of scope for v1.
 5.3 Approved implementations only — no custom cryptography:
 
 | Platform | Library |
@@ -335,5 +335,5 @@ Each active user consumes **two** connections (mobile + desktop, when both onlin
 1. Desktop (signed in, licensed) requests pairing token from Auth service → renders QR `{v, pairing_token, desktop_pubkey, desktop_device_id, endpoints}`.
 2. Mobile scans QR → `POST /v1/pairings {pairing_token, mobile_device_id, mobile_pubkey}`.
 3. Auth service validates token + license capacity → creates `pair_id` → returns `{pair_id, desktop_pubkey}`; desktop receives `{pair_id, mobile_pubkey}`.
-4. Both sides: X25519(priv, peer_pub) → HKDF → session keys.
+4. On connect, each side also sends a per-session ephemeral X25519 public key in the first handshake frame; both derive the session keys by mixing the identity DH and the ephemeral DH (FR-5.2, forward secrecy) → HKDF → directional session keys.
 5. Both connect to relay with fresh JWTs; relay claims slots; `sys{peer_online}` delivered to each; encrypted traffic flows.

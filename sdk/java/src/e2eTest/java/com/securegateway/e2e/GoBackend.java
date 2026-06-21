@@ -87,7 +87,10 @@ final class GoBackend implements AutoCloseable {
                 Map.entry("AUTH_JWT_ALG", "ES256"),
                 Map.entry("AUTH_JWT_KID", "e2e-1"),
                 Map.entry("AUTH_JWT_SIGNING_KEY_FILE", keys.resolve("relay.key.json").toString()),
-                Map.entry("AUTH_STRIPE_WEBHOOK_SECRET", "whsec_e2e_dummy"),
+                // No Stripe in the E2E backend; the license is seeded via AUTH_DEV_SEED.
+                // Stripe config is all-or-none, so run ungated rather than set a lone
+                // webhook secret (which the auth service rejects at boot).
+                Map.entry("AUTH_BILLING_DISABLED", "true"),
                 Map.entry("AUTH_ADMIN_KEY", ADMIN_KEY),
                 Map.entry("AUTH_DEV_SEED", ACCOUNT_ID + "," + LICENSE_ID + "," + SUBSCRIPTION_ID),
                 Map.entry("AUTH_RELAY_URL", wsUrl()),

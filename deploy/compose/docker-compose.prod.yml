@@ -82,6 +82,9 @@ services:
         condition: service_healthy
     environment:
       AUTH_LISTEN_ADDR: ":8080"
+      # Private metrics listener (SG-06/SG-11): on the internal Docker network only,
+      # never published to the host and 404'd at the Caddy edge.
+      AUTH_METRICS_ADDR: ":9090"
       AUTH_JWT_ISSUER: "${JWT_ISSUER}"
       AUTH_JWT_AUDIENCE: "relay"
       AUTH_JWT_ALG: "ES256"
@@ -131,6 +134,9 @@ services:
         condition: service_started
     environment:
       RELAY_LISTEN_ADDR: ":8443"
+      # Private metrics listener (SG-06/SG-11): internal network only, never
+      # published to the host and 404'd at the Caddy edge.
+      RELAY_METRICS_ADDR: ":9090"
       RELAY_JWT_ISSUER: "${JWT_ISSUER}"
       RELAY_JWT_AUDIENCE: "relay"
       RELAY_JWKS_URL: "http://auth:8080/.well-known/jwks.json"

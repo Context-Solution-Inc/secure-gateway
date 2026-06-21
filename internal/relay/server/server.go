@@ -39,6 +39,9 @@ type Server struct {
 	metrics *metrics.Set
 	deps    Deps
 	http    *http.Server
+	// metricsHTTP serves /metrics on a separate private listener when
+	// RELAY_METRICS_ADDR is set; nil when metrics are on the main mux (SG-06/SG-11).
+	metricsHTTP *http.Server
 
 	// ipLimiter throttles per-IP connection attempts; bans tracks 4005 abuse
 	// offenders. Both are nil when rate limiting is disabled.
@@ -69,7 +72,13 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.Handle("/metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}))
+	// /metrics is exposed on the public connection listener only when no private
+	// metrics listener is configured (dev convenience). When RELAY_METRICS_ADDR is
+	// set, metrics move to that private listener and are kept off the public,
+	// edge-proxied port (SG-06/SG-11).
+	if cfg.MetricsAddr == "" {
+		mux.Handle("/metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}))
+	}
 	mux.HandleFunc("/v1/connect", s.handleConnect)
 
 	tlsCfg, err := s.tlsConfig()
@@ -82,6 +91,17 @@ func New(cfg *config.Config, log *slog.Logger, m *metrics.Set, deps Deps) (*Serv
 		Handler:           httpsec.HSTS(mux), // HSTS on the HTTP surface (PRD §10.2)
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	if cfg.MetricsAddr != "" {
+		mmux := http.NewServeMux()
+		mmux.HandleFunc("/healthz", s.handleHealthz)
+		mmux.Handle("/metrics", promhttp.HandlerFor(m.Registry, promhttp.HandlerOpts{}))
+		s.metricsHTTP = &http.Server{
+			Addr:              cfg.MetricsAddr,
+			Handler:           mmux,
+			ReadHeaderTimeout: 10 * time.Second,
+		}
 	}
 	return s, nil
 }
@@ -137,6 +157,15 @@ func (s *Server) Run(ctx context.Context) error {
 		go s.sweepLimiters(ctx)
 	}
 
+	if s.metricsHTTP != nil {
+		go func() {
+			if err := s.metricsHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.log.Error("metrics listener failed", "addr", s.cfg.MetricsAddr, "err", err.Error())
+			}
+		}()
+		s.log.Info("relay metrics listening (private)", "addr", s.cfg.MetricsAddr)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		var err error
@@ -175,6 +204,9 @@ func (s *Server) shutdown() error {
 	//    return as their sessions close), bounded by the drain budget.
 	sctx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownDrain)
 	defer cancel()
+	if s.metricsHTTP != nil {
+		_ = s.metricsHTTP.Shutdown(sctx)
+	}
 	if err := s.http.Shutdown(sctx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}

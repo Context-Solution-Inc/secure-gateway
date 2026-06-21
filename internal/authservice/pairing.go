@@ -222,9 +222,20 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if rePair {
+		evicted := existing.MobileDeviceID
 		if err := s.store.UpdatePairingDevices(ctx, pairID, mobile.ID, desktop.ID); err != nil {
 			writeErr(w, http.StatusInternalServerError, "store_error")
 			return
+		}
+		// Revoke the evicted mobile device's refresh tokens so it cannot mint new
+		// connection tokens for this pairing after being replaced (SG-04, FR-2.4).
+		// The revocation event below only cuts the live session; without this the
+		// evicted device could refresh and reconnect for up to the refresh TTL.
+		if evicted != "" && evicted != mobile.ID {
+			if err := s.store.RevokeRefreshTokensByDevice(ctx, evicted, s.now()); err != nil {
+				s.log.Error("revoke evicted device refresh tokens failed",
+					logging.FieldDeviceID, evicted, logging.FieldReason, err.Error())
+			}
 		}
 		// Cut any live session for the replaced device(s) (FR-2.4).
 		s.publishRevocation(ctx, backplane.RevocationEvent{PairID: pairID})

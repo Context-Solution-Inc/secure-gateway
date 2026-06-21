@@ -11,9 +11,11 @@ The iOS Relay Client SDK (PRD §8.2). Same conceptual API as the Android (Kotlin
 
 Matches the Go reference (`internal/e2ee/e2ee.go`) and the JVM SDKs byte-for-byte:
 
-- **X25519 ECDH** — CryptoKit `Curve25519.KeyAgreement` (raw shared secret).
-- **HKDF-SHA256** — CryptoKit `HKDF<SHA256>` (RFC 5869); `salt = mobileNonce||desktopNonce`,
-  `info = "secure-gateway/e2ee/v1|"+dir`, `dir ∈ {m2d,d2m}`, 32-byte output.
+- **X25519 ECDH** — CryptoKit `Curve25519.KeyAgreement` (raw shared secret). Long-term identity
+  keys plus a per-session ephemeral keypair; the four-DH `ikm = ss||ee||md||dm` (Noise-KK style)
+  gives **forward secrecy** (see `vectors-spec.md`).
+- **HKDF-SHA256** — CryptoKit `HKDF<SHA256>` (RFC 5869); `salt = mobileEphemeralPub||desktopEphemeralPub`,
+  `info = "secure-gateway/e2ee/v2|"+dir`, `dir ∈ {m2d,d2m}`, 32-byte output.
 - **XChaCha20-Poly1305 (24-byte nonce)** — libsodium via **swift-sodium**
   (`aead.xchacha20poly1305ietf`). CryptoKit's `ChaChaPoly` is the **12-byte IETF** variant and
   will **not** match — do not use it for payloads.

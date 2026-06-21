@@ -37,5 +37,8 @@ subprojects {
 
 allprojects {
     group = "com.securegateway"
-    version = "0.1.0"
+    // 0.2.0: breaking E2EE handshake change (v1 -> v2 ephemeral forward secrecy,
+    // SG-01) plus replay protection (SG-02). Bumped so consumers re-resolve from
+    // mavenLocal rather than reuse a cached 0.1.0.
+    version = "0.2.0"
 }

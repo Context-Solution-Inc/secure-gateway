@@ -49,10 +49,10 @@ class VectorsConformanceTest {
         byte[] mobilePub = Hex.decode(v.get("mobile_public").asText());
         byte[] desktopPriv = Hex.decode(v.get("desktop_private").asText());
         byte[] desktopPub = Hex.decode(v.get("desktop_public").asText());
-        byte[] mobileNonce = Hex.decode(v.get("mobile_handshake_nonce").asText());
-        byte[] desktopNonce = Hex.decode(v.get("desktop_handshake_nonce").asText());
-        byte[] keyM2D = Hex.decode(v.get("key_m2d").asText());
-        byte[] keyD2M = Hex.decode(v.get("key_d2m").asText());
+        byte[] mobileEphPriv = Hex.decode(v.get("mobile_ephemeral_private").asText());
+        byte[] mobileEphPub = Hex.decode(v.get("mobile_ephemeral_public").asText());
+        byte[] desktopEphPriv = Hex.decode(v.get("desktop_ephemeral_private").asText());
+        byte[] desktopEphPub = Hex.decode(v.get("desktop_ephemeral_public").asText());
         byte[] messageNonce = Hex.decode(v.get("message_nonce").asText());
         String id = v.get("id").asText();
         long ts = v.get("ts").asLong();
@@ -60,43 +60,26 @@ class VectorsConformanceTest {
         byte[] wire = Hex.decode(v.get("wire_ciphertext").asText());
         Role sender = Role.fromWire(v.get("sender").asText());
 
-        // 1. Public keys derive from the committed private keys.
+        // 1. Public keys (identity + ephemeral) derive from the committed private keys.
         assertArrayEquals(mobilePub, Crypto.publicFromPrivate(mobilePriv), "mobile public");
         assertArrayEquals(desktopPub, Crypto.publicFromPrivate(desktopPriv), "desktop public");
+        assertArrayEquals(mobileEphPub, Crypto.publicFromPrivate(mobileEphPriv), "mobile ephemeral public");
+        assertArrayEquals(desktopEphPub, Crypto.publicFromPrivate(desktopEphPriv), "desktop ephemeral public");
 
-        // 2. Directional keys match (validates X25519 ECDH + HKDF-SHA256).
-        Session mobileSelf = Session.create(mobilePriv, desktopPub, Role.MOBILE, mobileNonce, desktopNonce);
-        // Re-seal via the sender's own session with the fixed message nonce and
-        // assert the wire bytes match byte-for-byte; this exercises seal + AEAD.
-        byte[] senderPriv = sender == Role.MOBILE ? mobilePriv : desktopPriv;
-        byte[] peerPub = sender == Role.MOBILE ? desktopPub : mobilePub;
-        Session senderSession = Session.create(senderPriv, peerPub, sender, mobileNonce, desktopNonce);
+        // 2. Re-seal via the sender's session with the fixed message nonce; the wire
+        // bytes must match byte-for-byte (exercises the full key derivation + AEAD).
+        Session senderSession = sender == Role.MOBILE
+                ? Session.create(mobilePriv, desktopPub, mobileEphPriv, desktopEphPub, Role.MOBILE)
+                : Session.create(desktopPriv, mobilePub, desktopEphPriv, mobileEphPub, Role.DESKTOP);
         byte[] produced = senderSession.sealWith(messageNonce, id, ts, plaintext);
         assertArrayEquals(wire, produced, "wire ciphertext");
 
         // 3. The peer opens the wire payload back to the plaintext.
-        Role peerRole = sender == Role.MOBILE ? Role.DESKTOP : Role.MOBILE;
-        byte[] receiverPriv = sender == Role.MOBILE ? desktopPriv : mobilePriv;
-        byte[] receiverPeerPub = sender == Role.MOBILE ? mobilePub : desktopPub;
-        Session receiverSession = Session.create(receiverPriv, receiverPeerPub, peerRole, mobileNonce, desktopNonce);
+        Session receiverSession = sender == Role.MOBILE
+                ? Session.create(desktopPriv, mobilePub, desktopEphPriv, mobileEphPub, Role.DESKTOP)
+                : Session.create(mobilePriv, desktopPub, mobileEphPriv, desktopEphPub, Role.MOBILE);
         byte[] opened = receiverSession.open(id, ts, wire);
         assertArrayEquals(plaintext, opened, "decrypted plaintext");
-
-        // Sanity: keys in the vector are reproducible (m2d derived independent of role).
-        assertArrayEquals(keyM2D, deriveDirect(mobilePriv, desktopPub, mobileNonce, desktopNonce, Crypto.DIR_M2D));
-        assertArrayEquals(keyD2M, deriveDirect(mobilePriv, desktopPub, mobileNonce, desktopNonce, Crypto.DIR_D2M));
-        // mobileSelf is referenced to ensure construction succeeds for the mobile role too.
-        assertNotNull(mobileSelf);
-    }
-
-    // Derive a directional key the same way Session does, for the key_m2d/key_d2m asserts.
-    private static byte[] deriveDirect(byte[] myPriv, byte[] peerPub, byte[] mobileNonce, byte[] desktopNonce, String dir) {
-        byte[] shared = Crypto.deriveSharedSecret(myPriv, peerPub);
-        byte[] salt = new byte[mobileNonce.length + desktopNonce.length];
-        System.arraycopy(mobileNonce, 0, salt, 0, mobileNonce.length);
-        System.arraycopy(desktopNonce, 0, salt, mobileNonce.length, desktopNonce.length);
-        byte[] info = (Crypto.INFO_PREFIX + dir).getBytes(java.nio.charset.StandardCharsets.UTF_8);
-        return Hkdf.derive(shared, salt, info, Crypto.KEY_SIZE);
     }
 
     private static byte[] readResource(String name) throws Exception {

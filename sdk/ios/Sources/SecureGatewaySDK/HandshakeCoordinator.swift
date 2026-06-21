@@ -1,31 +1,35 @@
 import Foundation
 
-/// Per-session handshake (PRD FR-5.2): each side exchanges a 32-byte nonce in the first
-/// frame, then both derive the directional `Session` keys. Mirrors the JVM SDK: a 1-byte tag
-/// inside the opaque relay payload distinguishes a cleartext handshake nonce from an
-/// encrypted application frame.
+/// Per-session handshake (PRD FR-5.2): each side generates a fresh ephemeral X25519 keypair
+/// and exchanges its public half in the first frame, then both derive the directional
+/// `Session` keys (mixing the ephemeral DH into the keying material for forward secrecy).
+/// Mirrors the JVM SDK: a 1-byte tag inside the opaque relay payload distinguishes a
+/// cleartext ephemeral public key from an encrypted application frame.
 final class HandshakeCoordinator {
     static let tagHandshake: UInt8 = 0x01
     static let tagData: UInt8 = 0x02
 
-    private let myPriv: Data
-    private let peerPub: Data
+    private let idPriv: Data
+    private let peerIdPub: Data
     private let myRole: Role
-    private let myNonce: Data
+    private let ephPriv: Data
+    private let ephPub: Data
     private var session: Session?
 
     init(myPriv: Data, peerPub: Data, myRole: Role) {
-        self.myPriv = myPriv
-        self.peerPub = peerPub
+        self.idPriv = myPriv
+        self.peerIdPub = peerPub
         self.myRole = myRole
-        self.myNonce = Crypto.newHandshakeNonce()
+        let eph = Crypto.generateKeyPair()
+        self.ephPriv = eph.privateKey
+        self.ephPub = eph.publicKey
     }
 
     var isComplete: Bool { session != nil }
 
     func handshakeFrame() -> Data {
         var d = Data([Self.tagHandshake])
-        d.append(myNonce)
+        d.append(ephPub)
         return d
     }
 
@@ -35,7 +39,7 @@ final class HandshakeCoordinator {
         let body = payload.suffix(from: payload.startIndex + 1)
         switch tag {
         case Self.tagHandshake:
-            try acceptPeerNonce(Data(body))
+            try acceptPeerEphemeral(Data(body))
             return nil
         case Self.tagData:
             guard let s = session else { throw CryptoError.openFailed }
@@ -52,10 +56,9 @@ final class HandshakeCoordinator {
         return d
     }
 
-    private func acceptPeerNonce(_ peerNonce: Data) throws {
-        let mobileNonce = myRole == .mobile ? myNonce : peerNonce
-        let desktopNonce = myRole == .mobile ? peerNonce : myNonce
-        session = try Session.create(myPriv: myPriv, peerPub: peerPub, role: myRole,
-                                     mobileNonce: mobileNonce, desktopNonce: desktopNonce)
+    private func acceptPeerEphemeral(_ peerEphPub: Data) throws {
+        guard peerEphPub.count == Crypto.keySize else { throw CryptoError.badLength }
+        session = try Session.create(idPriv: idPriv, peerIdPub: peerIdPub,
+                                     ephPriv: ephPriv, peerEphPub: peerEphPub, role: myRole)
     }
 }

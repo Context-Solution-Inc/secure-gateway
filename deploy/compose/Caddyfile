@@ -8,10 +8,17 @@
 
 # Public wss endpoint -> relay.
 {$RELAY_HOST} {
+	# Never expose operational metrics on the public edge (SG-11). Metrics are
+	# served on each service's private metrics listener (RELAY_METRICS_ADDR /
+	# AUTH_METRICS_ADDR), scraped over the internal network only.
+	@metrics path /metrics
+	respond @metrics 404
 	reverse_proxy relay:8443
 }
 
 # Public HTTPS API (login/pairing/JWKS/webhooks) -> auth.
 {$AUTH_HOST} {
+	@metrics path /metrics
+	respond @metrics 404
 	reverse_proxy auth:8080
 }

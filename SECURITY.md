@@ -21,9 +21,12 @@ The relay is designed so that **our infrastructure cannot read user traffic**:
 
 - **End-to-end encryption (E2EE).** Messages are sealed on the sending device and
   opened only on the paired device — X25519 ECDH → HKDF-SHA256 directional keys →
-  XChaCha20-Poly1305, with the envelope `id`/`ts` bound as AEAD associated data.
-  The relay forwards opaque ciphertext frames it cannot decrypt and **never logs
-  payloads** (enforced by test).
+  XChaCha20-Poly1305, with the envelope `id`/`ts` bound as AEAD associated data and
+  a per-session receive-side anti-replay window. The relay forwards opaque
+  ciphertext frames it cannot decrypt and **never logs payloads** (enforced by test).
+- **Forward secrecy.** Each session mixes a fresh ephemeral X25519 exchange into the
+  key derivation, so compromise of a device's long-term identity key does not expose
+  previously recorded session traffic.
 - **Pairing private keys never leave the device.** Only X25519 public keys are
   exchanged during QR pairing.
 - **Asymmetric auth.** The relay verifies connection JWTs (ES256/EdDSA) against the

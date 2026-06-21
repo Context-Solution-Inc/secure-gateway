@@ -2,36 +2,37 @@ package e2ee
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/lley154/secure-gateway/internal/token"
 )
 
 // sessionPair builds the mobile and desktop sessions for one connection from a
-// fresh key exchange and handshake nonces.
+// fresh identity key exchange plus per-session ephemeral keys.
 func sessionPair(t *testing.T) (mobile, desktop *Session) {
 	t.Helper()
-	m, err := GenerateKeyPair()
+	m, err := GenerateKeyPair() // mobile identity
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := GenerateKeyPair()
+	d, err := GenerateKeyPair() // desktop identity
 	if err != nil {
 		t.Fatal(err)
 	}
-	mn, err := NewHandshakeNonce()
+	me, err := GenerateKeyPair() // mobile ephemeral
 	if err != nil {
 		t.Fatal(err)
 	}
-	dn, err := NewHandshakeNonce()
+	de, err := GenerateKeyPair() // desktop ephemeral
 	if err != nil {
 		t.Fatal(err)
 	}
-	mobile, err = NewSession(m.Private, d.Public, token.RoleMobile, mn, dn)
+	mobile, err = NewSession(m.Private, d.Public, me.Private, de.Public, token.RoleMobile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	desktop, err = NewSession(d.Private, m.Public, token.RoleDesktop, mn, dn)
+	desktop, err = NewSession(d.Private, m.Public, de.Private, me.Public, token.RoleDesktop)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,6 +108,46 @@ func TestTamperDetection(t *testing.T) {
 	}
 }
 
+func TestReplayRejected(t *testing.T) {
+	mobile, desktop := sessionPair(t)
+	const (
+		id = "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+		ts = int64(1765432100123)
+	)
+	ct, err := mobile.Seal(id, ts, []byte("deliver once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open(id, ts, ct); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	// Re-injecting the exact same authenticated envelope must be rejected (SG-02).
+	if _, err := desktop.Open(id, ts, ct); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replay: want ErrReplay, got %v", err)
+	}
+}
+
+func TestStaleTimestampRejected(t *testing.T) {
+	mobile, desktop := sessionPair(t)
+	// Advance the receive high-water mark with a recent message.
+	ctNew, err := mobile.Seal("id-new", 10_000_000, []byte("recent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open("id-new", 10_000_000, ctNew); err != nil {
+		t.Fatalf("open recent: %v", err)
+	}
+	// A far-older authenticated message (outside the window) is refused even though
+	// its AEAD tag is valid, blocking long-delayed replays.
+	ctOld, err := mobile.Seal("id-old", 1, []byte("ancient"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open("id-old", 1, ctOld); !errors.Is(err, ErrStale) {
+		t.Fatalf("stale: want ErrStale, got %v", err)
+	}
+}
+
 func TestWrongDirectionKeyFails(t *testing.T) {
 	mobile, desktop := sessionPair(t)
 	// A frame the mobile sealed must not open with the mobile's own recv key.
@@ -121,36 +162,36 @@ func TestWrongDirectionKeyFails(t *testing.T) {
 }
 
 func TestDistinctSessionsDistinctKeys(t *testing.T) {
-	// Same keypairs, different handshake nonces => different ciphertext for the
-	// same plaintext (session-granularity forward secrecy, FR-5.2).
+	// Same identity keypairs, different ephemeral keys => different session keys.
+	// This is the basis of forward secrecy (FR-5.2): the ephemeral DH is mixed
+	// into the keying material, so a session's keys can't be recomputed from the
+	// long-term identity keys alone.
 	m, _ := GenerateKeyPair()
 	d, _ := GenerateKeyPair()
-	mn1, _ := NewHandshakeNonce()
-	dn1, _ := NewHandshakeNonce()
-	mn2, _ := NewHandshakeNonce()
-	dn2, _ := NewHandshakeNonce()
+	me1, _ := GenerateKeyPair()
+	de1, _ := GenerateKeyPair()
+	me2, _ := GenerateKeyPair()
+	de2, _ := GenerateKeyPair()
 
-	s1, err := NewSession(m.Private, d.Public, token.RoleMobile, mn1, dn1)
+	s1, err := NewSession(m.Private, d.Public, me1.Private, de1.Public, token.RoleMobile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, err := NewSession(m.Private, d.Public, token.RoleMobile, mn2, dn2)
+	s2, err := NewSession(m.Private, d.Public, me2.Private, de2.Public, token.RoleMobile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if s1.sendKey == s2.sendKey {
-		t.Fatal("different handshake nonces must yield different session keys")
+		t.Fatal("different ephemeral keys must yield different session keys")
 	}
 }
 
 func TestNewSessionValidation(t *testing.T) {
 	m, _ := GenerateKeyPair()
 	d, _ := GenerateKeyPair()
-	good := make([]byte, HandshakeNonceSize)
-	if _, err := NewSession(m.Private, d.Public, "bogus", good, good); err == nil {
+	me, _ := GenerateKeyPair()
+	de, _ := GenerateKeyPair()
+	if _, err := NewSession(m.Private, d.Public, me.Private, de.Public, "bogus"); err == nil {
 		t.Fatal("expected invalid-role error")
-	}
-	if _, err := NewSession(m.Private, d.Public, token.RoleMobile, good[:8], good); err == nil {
-		t.Fatal("expected short-nonce error")
 	}
 }
