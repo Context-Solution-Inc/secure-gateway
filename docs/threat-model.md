@@ -11,7 +11,7 @@ change.
 | Asset | Why it matters |
 |---|---|
 | User message content | Private user data. Must never be readable by our infrastructure. |
-| Device pairing private keys (X25519) | Compromise breaks E2EE for that pair. Never leave the device. |
+| Device identity private keys (X25519) | Used to authenticate the peer and pair. Compromise lets an attacker impersonate that device in future sessions, but per-session ephemeral keys give forward secrecy, so it does **not** expose previously recorded session traffic. Never leave the device. |
 | JWT signing private key (ES256/EdDSA) | Can mint connection tokens for any pair. Lives only in the auth service. |
 | Stripe webhook secret / API key | Forging webhooks could grant/deny licenses; API key can read billing data. |
 | Account credentials / refresh tokens | Grant token issuance for an account's pairs. |

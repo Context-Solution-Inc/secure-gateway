@@ -49,7 +49,8 @@ vectors, SDK API) is frozen.
   endpoints}`); the mobile scans it and completes pairing over HTTPS, exchanging
   X25519 public keys. New endpoints: `POST /v1/pairing-tokens`,
   `POST /v1/pairing-tokens/poll`, `POST /v1/pairings/unpair`.
-- The `internal/e2ee` reference crypto (FR-5): X25519 ECDH → HKDF-SHA256
+- The `internal/e2ee` reference crypto (FR-5): X25519 ECDH (long-term identity +
+  per-session ephemeral keys, for forward secrecy) → HKDF-SHA256
   directional keys → **XChaCha20-Poly1305** (24-byte nonce), with the envelope
   `id`/`ts` bound as AEAD associated data. The committed interop vectors
   (`internal/e2ee/testdata/vectors.json`) are the cross-platform contract; the

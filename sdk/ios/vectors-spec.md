@@ -13,22 +13,36 @@ an implementer needs no Go.
 | KDF | HKDF-SHA256 (RFC 5869) | NOT libsodium's `crypto_kdf` (BLAKE2b) — use HMAC-SHA256 HKDF |
 | AEAD | XChaCha20-Poly1305 | **24-byte nonce** (libsodium `..._xchacha20poly1305_ietf_*`); NOT the 12-byte IETF ChaCha |
 
-## Directional session keys
+## Directional session keys (v2 — forward secret)
 
-Each side contributes a fresh 32-byte handshake nonce, exchanged in the first frame of the
-session. Two directional keys are derived:
+Each device has a long-term **identity** keypair (public half exchanged at QR pairing) and
+generates a fresh **ephemeral** keypair per session whose public half is exchanged in the first
+frame of the session. Two directional keys are derived by mixing four X25519 shared secrets
+(Noise-KK style) into the HKDF input keying material:
 
 ```
-salt = mobile_handshake_nonce (32) || desktop_handshake_nonce (32)      # mobile first, fixed by ROLE
-info = "secure-gateway/e2ee/v1|" + dir       # dir = "m2d" or "d2m"
-K_dir = HKDF-SHA256(ikm = X25519(myPriv, peerPub), salt = salt, info = info, L = 32)
+ss  = X25519(mobileIdentity,  desktopIdentity)    # authenticates the identities
+ee  = X25519(mobileEphemeral, desktopEphemeral)   # forward secrecy
+md  = X25519(mobileIdentity,  desktopEphemeral)
+dm  = X25519(desktopIdentity, mobileEphemeral)
+ikm = ss || ee || md || dm                        # canonical, role-independent order
+
+salt = mobile_ephemeral_public (32) || desktop_ephemeral_public (32)   # mobile first, fixed by ROLE
+info = "secure-gateway/e2ee/v2|" + dir            # dir = "m2d" or "d2m"
+K_dir = HKDF-SHA256(ikm, salt, info, L = 32)
 ```
+
+Each side computes the same four secrets from its own private keys: e.g. the mobile computes
+`md = X25519(mobileIdentityPriv, desktopEphemeralPub)` and `dm = X25519(mobileEphemeralPriv,
+desktopIdentityPub)`; the desktop computes the byte-identical values from the other direction.
 
 - **mobile** seals with `K_m2d`, opens with `K_d2m`.
 - **desktop** seals with `K_d2m`, opens with `K_m2d`.
 
-Salt ordering is fixed by role (mobile nonce first), **not** by who initiated. Re-deriving per
-session gives session-granularity forward secrecy.
+Salt ordering is fixed by role (mobile ephemeral key first), **not** by who initiated. Because
+the ephemeral private keys are discarded after the session, this provides **forward secrecy**:
+compromise of a long-term identity private key does not expose recorded past/future sessions.
+The identity DH (`ss`/`md`/`dm`) still authenticates the peer.
 
 ## Per-message AEAD
 
@@ -49,16 +63,20 @@ on the envelope — a mismatch fails authentication).
 `{ scheme, vectors[] }`. Each vector (all byte fields lowercase hex):
 
 `name`, `sender` (`mobile`/`desktop`), `mobile_private/public`, `desktop_private/public`,
-`mobile_handshake_nonce`, `desktop_handshake_nonce`, `key_m2d`, `key_d2m`, `message_nonce` (24),
-`id` (string), `ts` (int64), `plaintext` (hex, may be empty), `wire_ciphertext` (hex).
+`mobile_ephemeral_private/public`, `desktop_ephemeral_private/public`, `key_m2d`, `key_d2m`,
+`message_nonce` (24), `id` (string), `ts` (int64), `plaintext` (hex, may be empty),
+`wire_ciphertext` (hex). (`key_m2d`/`key_d2m` are informational — building a session and
+reproducing `wire_ciphertext` already exercises the full derivation.)
 
-**Conformance:** derive public keys (assert == committed), derive `K_m2d`/`K_d2m` (assert ==),
-re-seal `plaintext` with the fixed `message_nonce` (assert == `wire_ciphertext`), and open
-`wire_ciphertext` back to `plaintext`. There are 4 vectors: basic m→d, basic d→m, empty
-plaintext, and binary (non-UTF8) plaintext with a max-int `ts`.
+**Conformance:** derive identity + ephemeral public keys (assert == committed), build the
+sender/receiver sessions from the committed identity + ephemeral keys, re-seal `plaintext` with
+the fixed `message_nonce` (assert == `wire_ciphertext`), and open `wire_ciphertext` back to
+`plaintext`. There are 4 vectors: basic m→d, basic d→m, empty plaintext, and binary (non-UTF8)
+plaintext with a max-int `ts`.
 
 ## SDK framing note
 
 The relay payload is opaque, so the SDKs carry a 1-byte tag inside it to distinguish the
-cleartext handshake nonce (`0x01`) from an encrypted application frame (`0x02`). This framing is
-an SDK detail above the crypto contract above; the vectors test only covers the crypto layer.
+cleartext ephemeral public key (`0x01`) from an encrypted application frame (`0x02`). This
+framing is an SDK detail above the crypto contract above; the vectors test only covers the
+crypto layer.

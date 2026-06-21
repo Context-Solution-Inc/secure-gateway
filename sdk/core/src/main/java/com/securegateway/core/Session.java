@@ -8,10 +8,12 @@ import java.util.Map;
 
 /**
  * Holds the two directional session keys for one connection session, built after
- * both handshake nonces have been exchanged. Mirrors the Go reference
- * {@code e2ee.Session}: keys are derived with HKDF-SHA256 over the X25519 shared
- * secret, with {@code salt = mobileNonce || desktopNonce} (mobile first, fixed by
- * role) and {@code info = "secure-gateway/e2ee/v1|" + dir}. Mobile seals with
+ * both ephemeral public keys have been exchanged. Mirrors the Go reference
+ * {@code e2ee.Session}: keys are derived with HKDF-SHA256 over
+ * {@code ikm = ss || ee || md || dm} (four X25519 shared secrets, Noise-KK style;
+ * the ephemeral DH gives forward secrecy), with
+ * {@code salt = mobileEphemeralPub || desktopEphemeralPub} (mobile first, fixed by
+ * role) and {@code info = "secure-gateway/e2ee/v2|" + dir}. Mobile seals with
  * K_m2d and opens with K_d2m; desktop is the reverse.
  */
 public final class Session {

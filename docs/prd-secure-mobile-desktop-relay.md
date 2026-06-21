@@ -335,5 +335,5 @@ Each active user consumes **two** connections (mobile + desktop, when both onlin
 1. Desktop (signed in, licensed) requests pairing token from Auth service → renders QR `{v, pairing_token, desktop_pubkey, desktop_device_id, endpoints}`.
 2. Mobile scans QR → `POST /v1/pairings {pairing_token, mobile_device_id, mobile_pubkey}`.
 3. Auth service validates token + license capacity → creates `pair_id` → returns `{pair_id, desktop_pubkey}`; desktop receives `{pair_id, mobile_pubkey}`.
-4. Both sides: X25519(priv, peer_pub) → HKDF → session keys.
+4. On connect, each side also sends a per-session ephemeral X25519 public key in the first handshake frame; both derive the session keys by mixing the identity DH and the ephemeral DH (FR-5.2, forward secrecy) → HKDF → directional session keys.
 5. Both connect to relay with fresh JWTs; relay claims slots; `sys{peer_online}` delivered to each; encrypted traffic flows.

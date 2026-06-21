@@ -33,8 +33,9 @@ clients ──wss/https──▶ TLS termination ──▶ relay (:8443)  ┐
   issues short-lived connection JWTs **only** for valid licenses, drives QR
   pairing, and publishes revocations. It holds the JWT signing key; the relay
   verifies tokens against its published JWKS.
-- **End-to-end encryption** — X25519 ECDH → HKDF-SHA256 → XChaCha20-Poly1305.
-  Pairing private keys never leave the device; only public keys are exchanged.
+- **End-to-end encryption** — X25519 ECDH → HKDF-SHA256 → XChaCha20-Poly1305,
+  with a per-session ephemeral key exchange for forward secrecy. Pairing private
+  keys never leave the device; only public keys are exchanged.
 - **Backplane** — in-memory for a single instance, or Redis for multi-instance
   routing, slot enforcement, and revocation fan-out.
 - **Client SDKs** (`sdk/`) — Android (Kotlin), desktop (Java), iOS (Swift) hide
