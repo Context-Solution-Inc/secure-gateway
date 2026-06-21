@@ -11,22 +11,36 @@
 //   - Keys: X25519 (Curve25519). A private key is 32 random bytes; the public
 //     key is X25519(priv, basepoint).
 //   - Shared secret: ss = X25519(myPriv, peerPub) (32 bytes).
-//   - Session keys (FR-5.2, directional, per session): each side contributes a
-//     fresh 32-byte handshake nonce, exchanged in the first message of the
-//     session. Two directional keys are derived with HKDF-SHA256:
+//   - Session keys (directional, per session): each side contributes a fresh
+//     32-byte handshake nonce, exchanged in the first message of the session. Two
+//     directional keys are derived with HKDF-SHA256:
 //     salt = mobileHandshakeNonce || desktopHandshakeNonce (mobile first, fixed
 //     by role — not by who initiated); info = "secure-gateway/e2ee/v1|" + dir
 //     where dir is "m2d" (mobile→desktop) or "d2m" (desktop→mobile); output is
 //     32 bytes. K_m2d is used by the mobile to seal and the desktop to open;
-//     K_d2m is the reverse. Re-deriving per session gives session-granularity
-//     forward secrecy.
+//     K_d2m is the reverse.
 //   - AEAD: XChaCha20-Poly1305 with a random 24-byte nonce per message, the
 //     nonce prepended to the ciphertext (wire = nonce(24) || aead_ciphertext).
-//   - The envelope id and ts are bound as AEAD associated data to prevent replay
-//     and cross-message splicing (FR-5.1): aad = utf8(id) || bigEndianUint64(ts).
+//   - The envelope id and ts are bound as AEAD associated data, so the relay
+//     cannot tamper with or splice them onto a different ciphertext (FR-5.1):
+//     aad = utf8(id) || bigEndianUint64(ts). Verbatim replay of a whole envelope
+//     is prevented separately by a per-session anti-replay window on the receive
+//     path (see Session.Open / replayGuard), not by the AAD binding alone.
 //
 // Only golang.org/x/crypto primitives are used; there is no custom cryptography
 // (FR-5.3).
+//
+// # Forward secrecy (not yet provided — FR-5.2)
+//
+// The shared secret is computed from the long-term X25519 identity keys only; the
+// handshake nonces vary the derived keys per session but feed the HKDF salt, not
+// the input keying material. This gives per-session key separation but NOT forward
+// secrecy: an adversary who records ciphertext and the cleartext handshake nonces
+// and later compromises a device's long-term identity private key can re-derive
+// every past and future session key and decrypt the recorded traffic. Adding an
+// ephemeral X25519 exchange per session (mixing the ephemeral DH into the HKDF
+// IKM) to provide real forward secrecy is tracked as a follow-up; until it lands,
+// do not rely on forward secrecy. See docs/SECURITY-AUDIT.md (SG-01).
 package e2ee
 
 import (
@@ -36,6 +50,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
@@ -43,6 +58,19 @@ import (
 
 	"github.com/lley154/secure-gateway/internal/token"
 )
+
+// ErrReplay is returned by Open when an envelope id has already been delivered on
+// this session, and ErrStale when its timestamp falls before the replay window.
+// Both reject duplicate delivery of an authenticated message (FR-5.1, SG-02).
+var (
+	ErrReplay = errors.New("e2ee: replay detected")
+	ErrStale  = errors.New("e2ee: timestamp outside replay window")
+)
+
+// defaultReplayWindowMillis bounds how far behind the highest seen timestamp an
+// envelope may be and still be accepted. Envelope ts is unix-milliseconds (the
+// relay protocol's ts unit), so this is a 5-minute acceptance window.
+const defaultReplayWindowMillis int64 = 5 * 60 * 1000
 
 const (
 	// KeySize is the X25519 key length and the derived AEAD key length.
@@ -108,6 +136,47 @@ func NewHandshakeNonce() ([]byte, error) {
 type Session struct {
 	sendKey [KeySize]byte // seals outbound (this device -> peer)
 	recvKey [KeySize]byte // opens inbound (peer -> this device)
+	recv    *replayGuard  // anti-replay state for inbound envelopes (SG-02)
+}
+
+// replayGuard enforces single-delivery of authenticated (id, ts) envelopes within
+// a sliding timestamp window. It must only be advanced with id/ts that the AEAD
+// has already authenticated, so an attacker cannot inject an unauthenticated high
+// ts to push the window forward and starve legitimate messages.
+type replayGuard struct {
+	mu     sync.Mutex
+	window int64
+	lastTS int64
+	seen   map[string]int64
+	primed bool
+}
+
+func newReplayGuard(window int64) *replayGuard {
+	return &replayGuard{window: window, seen: make(map[string]int64)}
+}
+
+func (g *replayGuard) check(id string, ts int64) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.primed && ts < g.lastTS-g.window {
+		return ErrStale
+	}
+	if _, ok := g.seen[id]; ok {
+		return ErrReplay
+	}
+	g.seen[id] = ts
+	if !g.primed || ts > g.lastTS {
+		g.lastTS = ts
+	}
+	g.primed = true
+	// Prune ids that have fallen out of the window relative to the high-water mark.
+	floor := g.lastTS - g.window
+	for k, v := range g.seen {
+		if v < floor {
+			delete(g.seen, k)
+		}
+	}
+	return nil
 }
 
 // NewSession derives the directional session keys from the X25519 shared secret
@@ -134,7 +203,7 @@ func NewSession(myPriv, peerPub [KeySize]byte, myRole Role, mobileNonce, desktop
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{}
+	s := &Session{recv: newReplayGuard(defaultReplayWindowMillis)}
 	if myRole == token.RoleMobile {
 		s.sendKey, s.recvKey = keyM2D, keyD2M
 	} else {
@@ -201,6 +270,11 @@ func (s *Session) Open(id string, ts int64, wire []byte) ([]byte, error) {
 	pt, err := aead.Open(nil, nonce, ct, aad(id, ts))
 	if err != nil {
 		return nil, fmt.Errorf("e2ee: open: %w", err)
+	}
+	// Reject duplicate delivery only after the AEAD has authenticated id and ts,
+	// so the replay window cannot be advanced by forged metadata (SG-02, FR-5.1).
+	if err := s.recv.check(id, ts); err != nil {
+		return nil, err
 	}
 	return pt, nil
 }

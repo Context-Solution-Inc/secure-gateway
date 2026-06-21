@@ -3,9 +3,27 @@ import Foundation
 /// One connection session's directional keys, mirroring the Go `e2ee.Session` and the JVM
 /// SDK: mobile seals with K_m2d / opens with K_d2m; desktop is the reverse. Salt is always
 /// mobile-nonce-first, fixed by role.
-public struct Session {
+///
+/// This is a `final class` (not a `struct`) because `open` maintains per-session anti-replay
+/// state (SG-02) that must persist across calls on the same instance.
+public final class Session {
     private let sendKey: Data
     private let recvKey: Data
+
+    /// Envelope ts is unix-milliseconds (the relay protocol's ts unit); an inbound envelope
+    /// older than this many ms behind the highest seen ts is rejected. Mirrors the Go
+    /// reference `defaultReplayWindowMillis` (5 minutes).
+    private static let replayWindowMillis: Int64 = 5 * 60 * 1000
+
+    // Anti-replay state, advanced only with id/ts the AEAD has authenticated.
+    private var seen: [String: Int64] = [:]
+    private var lastTs: Int64 = 0
+    private var primed = false
+
+    private init(sendKey: Data, recvKey: Data) {
+        self.sendKey = sendKey
+        self.recvKey = recvKey
+    }
 
     public static func create(myPriv: Data, peerPub: Data, role: Role,
                               mobileNonce: Data, desktopNonce: Data) throws -> Session {
@@ -31,6 +49,26 @@ public struct Session {
         guard wire.count >= Crypto.nonceSize else { throw CryptoError.badLength }
         let nonce = wire.prefix(Crypto.nonceSize)
         let ct = wire.suffix(from: wire.startIndex + Crypto.nonceSize)
-        return try Crypto.aeadOpen(key: recvKey, nonce: Data(nonce), aad: Crypto.aad(id: id, ts: ts), cipher: Data(ct))
+        let pt = try Crypto.aeadOpen(key: recvKey, nonce: Data(nonce), aad: Crypto.aad(id: id, ts: ts), cipher: Data(ct))
+        // Reject duplicate delivery only after the AEAD has authenticated id/ts, so forged
+        // metadata cannot advance the replay window (SG-02, FR-5.1).
+        try checkReplay(id: id, ts: ts)
+        return pt
+    }
+
+    private func checkReplay(id: String, ts: Int64) throws {
+        if primed && ts < lastTs - Session.replayWindowMillis {
+            throw CryptoError.stale
+        }
+        if seen[id] != nil {
+            throw CryptoError.replay
+        }
+        seen[id] = ts
+        if !primed || ts > lastTs {
+            lastTs = ts
+        }
+        primed = true
+        let floor = lastTs - Session.replayWindowMillis
+        seen = seen.filter { $0.value >= floor }
     }
 }

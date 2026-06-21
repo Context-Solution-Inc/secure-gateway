@@ -2,6 +2,9 @@ package com.securegateway.core;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Map;
 
 /**
  * Holds the two directional session keys for one connection session, built after
@@ -13,8 +16,29 @@ import java.util.Arrays;
  */
 public final class Session {
 
+    /**
+     * Envelope ts is unix-milliseconds (the relay protocol's ts unit); an inbound
+     * envelope older than this many ms behind the highest seen ts is rejected.
+     * Mirrors the Go reference {@code defaultReplayWindowMillis} (5 minutes).
+     */
+    static final long DEFAULT_REPLAY_WINDOW_MILLIS = 5L * 60L * 1000L;
+
+    /** Thrown by {@link #open} when an envelope is a replay or outside the window (SG-02). */
+    public static final class ReplayException extends RuntimeException {
+        ReplayException(String message) {
+            super(message);
+        }
+    }
+
     private final byte[] sendKey; // seals outbound (this device -> peer)
     private final byte[] recvKey; // opens inbound (peer -> this device)
+
+    // Anti-replay state for inbound envelopes (SG-02), advanced only with id/ts
+    // the AEAD has authenticated.
+    private final long replayWindowMillis = DEFAULT_REPLAY_WINDOW_MILLIS;
+    private final Map<String, Long> seen = new HashMap<>();
+    private long lastTs;
+    private boolean primed;
 
     private Session(byte[] sendKey, byte[] recvKey) {
         this.sendKey = sendKey;
@@ -80,6 +104,30 @@ public final class Session {
         }
         byte[] nonce = Arrays.copyOfRange(wire, 0, Crypto.NONCE_SIZE);
         byte[] ct = Arrays.copyOfRange(wire, Crypto.NONCE_SIZE, wire.length);
-        return Crypto.aeadDecrypt(recvKey, nonce, Crypto.aad(id, ts), ct);
+        byte[] pt = Crypto.aeadDecrypt(recvKey, nonce, Crypto.aad(id, ts), ct);
+        // Reject duplicate delivery only after the AEAD has authenticated id/ts, so
+        // forged metadata cannot advance the replay window (SG-02, FR-5.1).
+        checkReplay(id, ts);
+        return pt;
+    }
+
+    private synchronized void checkReplay(String id, long ts) {
+        if (primed && ts < lastTs - replayWindowMillis) {
+            throw new ReplayException("e2ee: timestamp outside replay window");
+        }
+        if (seen.containsKey(id)) {
+            throw new ReplayException("e2ee: replay detected");
+        }
+        seen.put(id, ts);
+        if (!primed || ts > lastTs) {
+            lastTs = ts;
+        }
+        primed = true;
+        long floor = lastTs - replayWindowMillis;
+        for (Iterator<Map.Entry<String, Long>> it = seen.entrySet().iterator(); it.hasNext(); ) {
+            if (it.next().getValue() < floor) {
+                it.remove();
+            }
+        }
     }
 }

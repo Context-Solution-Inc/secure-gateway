@@ -2,6 +2,7 @@ package e2ee
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 
 	"github.com/lley154/secure-gateway/internal/token"
@@ -107,6 +108,46 @@ func TestTamperDetection(t *testing.T) {
 	}
 }
 
+func TestReplayRejected(t *testing.T) {
+	mobile, desktop := sessionPair(t)
+	const (
+		id = "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"
+		ts = int64(1765432100123)
+	)
+	ct, err := mobile.Seal(id, ts, []byte("deliver once"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open(id, ts, ct); err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	// Re-injecting the exact same authenticated envelope must be rejected (SG-02).
+	if _, err := desktop.Open(id, ts, ct); !errors.Is(err, ErrReplay) {
+		t.Fatalf("replay: want ErrReplay, got %v", err)
+	}
+}
+
+func TestStaleTimestampRejected(t *testing.T) {
+	mobile, desktop := sessionPair(t)
+	// Advance the receive high-water mark with a recent message.
+	ctNew, err := mobile.Seal("id-new", 10_000_000, []byte("recent"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open("id-new", 10_000_000, ctNew); err != nil {
+		t.Fatalf("open recent: %v", err)
+	}
+	// A far-older authenticated message (outside the window) is refused even though
+	// its AEAD tag is valid, blocking long-delayed replays.
+	ctOld, err := mobile.Seal("id-old", 1, []byte("ancient"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := desktop.Open("id-old", 1, ctOld); !errors.Is(err, ErrStale) {
+		t.Fatalf("stale: want ErrStale, got %v", err)
+	}
+}
+
 func TestWrongDirectionKeyFails(t *testing.T) {
 	mobile, desktop := sessionPair(t)
 	// A frame the mobile sealed must not open with the mobile's own recv key.
@@ -121,8 +162,9 @@ func TestWrongDirectionKeyFails(t *testing.T) {
 }
 
 func TestDistinctSessionsDistinctKeys(t *testing.T) {
-	// Same keypairs, different handshake nonces => different ciphertext for the
-	// same plaintext (session-granularity forward secrecy, FR-5.2).
+	// Same keypairs, different handshake nonces => different session keys (per-
+	// session key separation). Note this is NOT forward secrecy: the keys still
+	// derive from the static identity shared secret (see SG-01 / package doc).
 	m, _ := GenerateKeyPair()
 	d, _ := GenerateKeyPair()
 	mn1, _ := NewHandshakeNonce()

@@ -244,8 +244,16 @@ func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dev, err := s.store.GetDevice(ctx, rt.DeviceID)
-	if err != nil {
+	if err != nil || dev.AccountID != rt.AccountID {
 		s.rejectToken(w, http.StatusForbidden, "device_invalid")
+		return
+	}
+	// The device must still be a current member of the pairing (SG-04, FR-2.4):
+	// a device evicted by re-pairing must not be able to mint new tokens for the
+	// pairing it was removed from, mirroring handleIssueToken.
+	if !pairingHasDevice(pairing, dev) {
+		_ = s.store.RevokeRefreshToken(ctx, rt.ID)
+		s.rejectToken(w, http.StatusForbidden, "device_not_in_pairing")
 		return
 	}
 	// Re-check license validity on every refresh (FR-3.5, PRD §6.5 #1).
@@ -255,8 +263,14 @@ func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		s.rejectToken(w, http.StatusForbidden, "license_invalid")
 		return
 	}
-	// Rotate: the presented refresh token is single-use.
-	_ = s.store.RevokeRefreshToken(ctx, rt.ID)
+	// Rotate atomically: ConsumeRefreshToken is the single-use gate (SG-03). Only
+	// one of two concurrent requests presenting the same secret wins the revoke;
+	// the loser gets ErrConflict and is rejected, so a replayed token cannot yield
+	// a second valid token pair.
+	if err := s.store.ConsumeRefreshToken(ctx, rt.ID, s.now()); err != nil {
+		s.rejectToken(w, http.StatusUnauthorized, "refresh_invalid")
+		return
+	}
 	s.issueTokenPair(ctx, w, rt.AccountID, pairing, dev, lic)
 }
 

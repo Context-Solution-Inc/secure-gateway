@@ -21,11 +21,13 @@ public struct KeyPair {
     public let publicKey: Data   // 32 bytes
 }
 
-public enum CryptoError: Error {
+public enum CryptoError: Error, Equatable {
     case ecdhFailed
     case sealFailed
     case openFailed
     case badLength
+    case replay // SG-02: envelope id already delivered on this session
+    case stale  // SG-02: envelope ts is outside the replay window
 }
 
 public enum Crypto {

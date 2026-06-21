@@ -14,7 +14,9 @@ spec:
       labels: { app: relay }
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8443"
+        # Scrape the private metrics port, not the public :8443 connection port
+        # (SG-06/SG-11). RELAY_METRICS_ADDR=:9090 is set in relay-config.
+        prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
       securityContext:
@@ -33,9 +35,13 @@ spec:
             value: "1024 65535"
       containers:
         - name: relay
-          image: secure-gateway/relay:latest # pin by digest in production
+          # Pin to an immutable release reference before deploying. Prefer a digest
+          # (registry/relay@sha256:...); a versioned tag is the minimum (SG-12).
+          image: ghcr.io/lley154/secure-gateway/relay:v0.0.0 # REPLACE: pin to @sha256 digest for prod
+          imagePullPolicy: IfNotPresent
           ports:
             - { name: wss, containerPort: 8443 }
+            - { name: metrics, containerPort: 9090 } # private; not exposed by the Service
           envFrom:
             - configMapRef: { name: relay-config }
             - secretRef: { name: relay-secrets }

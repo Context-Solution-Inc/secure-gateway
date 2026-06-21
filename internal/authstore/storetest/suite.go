@@ -201,6 +201,56 @@ func testRefreshTokens(t *testing.T, s authstore.Store) {
 	if _, err := s.GetRefreshToken(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
 		t.Fatalf("GetRefreshToken missing: want ErrNotFound, got %v", err)
 	}
+
+	// ConsumeRefreshToken is the atomic single-use rotation gate (SG-03): the
+	// first consume succeeds and revokes; a second consume must return ErrConflict
+	// so a replayed token cannot yield a second token pair.
+	c := authstore.RefreshToken{ID: "rt_hash_2", DeviceID: "dev_2", AccountID: "acct_1", PairID: "pair_1", ExpiresAt: now.Add(time.Hour)}
+	if err := s.PutRefreshToken(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConsumeRefreshToken(ctx, "rt_hash_2", now); err != nil {
+		t.Fatalf("first consume: %v", err)
+	}
+	if got, _ := s.GetRefreshToken(ctx, "rt_hash_2"); got.Active(now) {
+		t.Fatalf("token still active after consume: %+v", got)
+	}
+	if err := s.ConsumeRefreshToken(ctx, "rt_hash_2", now); !errors.Is(err, authstore.ErrConflict) {
+		t.Fatalf("double consume: want ErrConflict, got %v", err)
+	}
+	if err := s.ConsumeRefreshToken(ctx, "missing", now); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("consume missing: want ErrNotFound, got %v", err)
+	}
+
+	// RevokeRefreshTokensByDevice revokes every still-active token for a device
+	// (SG-04) and is idempotent across devices with no active tokens.
+	for _, id := range []string{"rt_dev3_a", "rt_dev3_b"} {
+		if err := s.PutRefreshToken(ctx, authstore.RefreshToken{ID: id, DeviceID: "dev_3", AccountID: "acct_1", PairID: "pair_1", ExpiresAt: now.Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := authstore.RefreshToken{ID: "rt_dev4", DeviceID: "dev_4", AccountID: "acct_1", PairID: "pair_1", ExpiresAt: now.Add(time.Hour)}
+	if err := s.PutRefreshToken(ctx, keep); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RevokeRefreshTokensByDevice(ctx, "dev_3", now); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"rt_dev3_a", "rt_dev3_b"} {
+		if got, _ := s.GetRefreshToken(ctx, id); got.Active(now) {
+			t.Fatalf("device token still active after bulk revoke: %s", id)
+		}
+	}
+	if got, _ := s.GetRefreshToken(ctx, "rt_dev4"); !got.Active(now) {
+		t.Fatalf("other device's token wrongly revoked: %+v", got)
+	}
+	// Idempotent: revoking a device with no active tokens is not an error.
+	if err := s.RevokeRefreshTokensByDevice(ctx, "dev_3", now); err != nil {
+		t.Fatalf("idempotent revoke: %v", err)
+	}
+	if err := s.RevokeRefreshTokensByDevice(ctx, "no_such_device", now); err != nil {
+		t.Fatalf("revoke unknown device: %v", err)
+	}
 }
 
 func testPairingTokens(t *testing.T, s authstore.Store) {

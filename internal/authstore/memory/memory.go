@@ -328,6 +328,33 @@ func (s *Store) RevokeRefreshToken(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) ConsumeRefreshToken(_ context.Context, id string, consumedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.refreshTokens[id]
+	if !ok {
+		return authstore.ErrNotFound
+	}
+	if !r.RevokedAt.IsZero() {
+		return authstore.ErrConflict // already revoked (single-use rotation)
+	}
+	r.RevokedAt = consumedAt
+	s.refreshTokens[id] = r
+	return nil
+}
+
+func (s *Store) RevokeRefreshTokensByDevice(_ context.Context, deviceID string, revokedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, r := range s.refreshTokens {
+		if r.DeviceID == deviceID && r.RevokedAt.IsZero() {
+			r.RevokedAt = revokedAt
+			s.refreshTokens[id] = r
+		}
+	}
+	return nil
+}
+
 // --- Pairing tokens ---
 
 func (s *Store) CreatePairingToken(_ context.Context, t authstore.PairingToken) error {

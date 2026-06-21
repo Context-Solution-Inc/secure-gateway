@@ -169,8 +169,8 @@ Policy decision (default): downgrades and payment failure are enforced *graceful
 
 ### FR-5: End-to-end encryption
 
-5.1 Key establishment: X25519 ECDH using the keys exchanged in the QR pairing flow; HKDF-SHA256 derives directional session keys; payloads sealed with **XChaCha20-Poly1305** (AEAD) with a random 24-byte nonce per message, nonce prepended to ciphertext. The envelope `id` and `ts` are bound as AEAD associated data to prevent replay/splicing across messages.
-5.2 Session keys are re-derived per connection session (fresh handshake nonces exchanged in the first encrypted message of a session) so long-lived pairs get forward-secrecy at session granularity. Full per-message ratcheting is out of scope for v1.
+5.1 Key establishment: X25519 ECDH using the keys exchanged in the QR pairing flow; HKDF-SHA256 derives directional session keys; payloads sealed with **XChaCha20-Poly1305** (AEAD) with a random 24-byte nonce per message, nonce prepended to ciphertext. The envelope `id` and `ts` are bound as AEAD associated data so they cannot be tampered with or spliced onto a different ciphertext. Verbatim replay of a whole envelope is prevented by a per-session anti-replay window on the receive side (reject already-seen ids and timestamps older than the window).
+5.2 Session keys are re-derived per connection session (fresh handshake nonces exchanged in the first encrypted message of a session) so each session uses distinct directional keys. **This is per-session key separation, not forward secrecy:** the keys still derive from the long-term X25519 identity shared secret, so compromise of a device's identity private key exposes recorded past/future sessions. Real forward secrecy (an ephemeral X25519 exchange mixed into the HKDF input keying material) and full per-message ratcheting are out of scope for v1 and tracked as a follow-up (SECURITY-AUDIT SG-01).
 5.3 Approved implementations only — no custom cryptography:
 
 | Platform | Library |

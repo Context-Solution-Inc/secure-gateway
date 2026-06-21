@@ -8,6 +8,10 @@ metadata:
   labels: { app: relay }
 data:
   RELAY_LISTEN_ADDR: ":8443"
+  # Serve /metrics on a private port, kept off the public connection listener and
+  # not exposed by the Service (SG-06/SG-11). Prometheus scrapes it via the pod
+  # annotation (prometheus.io/port: "9090").
+  RELAY_METRICS_ADDR: ":9090"
   RELAY_JWT_ISSUER: "https://auth.example.com"
   RELAY_JWT_AUDIENCE: "relay"
   # Verify tokens via the auth service's JWKS (production path).
@@ -35,6 +39,9 @@ metadata:
   labels: { app: auth }
 data:
   AUTH_LISTEN_ADDR: ":8080"
+  # Private metrics listener, kept off the public API port and the Service
+  # (SG-06/SG-11); scraped via the pod annotation (prometheus.io/port: "9090").
+  AUTH_METRICS_ADDR: ":9090"
   AUTH_JWT_ISSUER: "https://auth.example.com"
   AUTH_JWT_AUDIENCE: "relay"
   AUTH_JWT_ALG: "ES256"

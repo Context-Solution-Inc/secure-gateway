@@ -381,6 +381,33 @@ func (s *Store) RevokeRefreshToken(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Store) ConsumeRefreshToken(ctx context.Context, id string, consumedAt time.Time) error {
+	// Atomic single-use rotation: only the row that is still active is revoked.
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at=$2 WHERE id=$1 AND revoked_at IS NULL`,
+		id, consumedAt)
+	if err != nil {
+		return mapErr(err)
+	}
+	if tag.RowsAffected() == 0 {
+		// Distinguish missing (ErrNotFound) from already-revoked (ErrConflict).
+		var exists bool
+		if err := s.pool.QueryRow(ctx, `SELECT true FROM refresh_tokens WHERE id=$1`, id).Scan(&exists); err != nil {
+			return mapErr(err)
+		}
+		return authstore.ErrConflict
+	}
+	return nil
+}
+
+func (s *Store) RevokeRefreshTokensByDevice(ctx context.Context, deviceID string, revokedAt time.Time) error {
+	// Idempotent bulk revoke: revoking zero still-active tokens is not an error.
+	_, err := s.pool.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at=$2 WHERE device_id=$1 AND revoked_at IS NULL`,
+		deviceID, revokedAt)
+	return mapErr(err)
+}
+
 // --- Pairing tokens ---
 
 func (s *Store) CreatePairingToken(ctx context.Context, t authstore.PairingToken) error {

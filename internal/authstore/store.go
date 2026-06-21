@@ -258,6 +258,14 @@ type Store interface {
 	PutRefreshToken(ctx context.Context, r RefreshToken) error
 	GetRefreshToken(ctx context.Context, id string) (RefreshToken, error)
 	RevokeRefreshToken(ctx context.Context, id string) error
+	// ConsumeRefreshToken atomically revokes a refresh token as part of rotation.
+	// It returns ErrConflict if the token was already revoked and ErrNotFound if
+	// missing, so rotation is single-use under concurrent requests (FR-3.1).
+	ConsumeRefreshToken(ctx context.Context, id string, consumedAt time.Time) error
+	// RevokeRefreshTokensByDevice revokes every still-active refresh token for a
+	// device, used to evict a device's tokens on re-pairing (FR-2.4). It is
+	// idempotent: revoking zero matching tokens is not an error.
+	RevokeRefreshTokensByDevice(ctx context.Context, deviceID string, revokedAt time.Time) error
 
 	// Pairing tokens (one-time QR credential, FR-2.1).
 	CreatePairingToken(ctx context.Context, t PairingToken) error

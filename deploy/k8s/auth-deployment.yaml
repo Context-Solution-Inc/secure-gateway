@@ -14,7 +14,9 @@ spec:
       labels: { app: auth }
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "8080"
+        # Scrape the private metrics port, not the public :8080 API port
+        # (SG-06/SG-11). AUTH_METRICS_ADDR=:9090 is set in auth-config.
+        prometheus.io/port: "9090"
         prometheus.io/path: "/metrics"
     spec:
       securityContext:
@@ -26,9 +28,13 @@ spec:
           type: RuntimeDefault
       containers:
         - name: auth
-          image: secure-gateway/auth:latest # pin by digest in production
+          # Pin to an immutable release reference before deploying. Prefer a digest
+          # (registry/auth@sha256:...); a versioned tag is the minimum (SG-12).
+          image: ghcr.io/lley154/secure-gateway/auth:v0.0.0 # REPLACE: pin to @sha256 digest for prod
+          imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }
+            - { name: metrics, containerPort: 9090 } # private; not exposed by the Service
           envFrom:
             - configMapRef: { name: auth-config }
             - secretRef: { name: auth-secrets }
