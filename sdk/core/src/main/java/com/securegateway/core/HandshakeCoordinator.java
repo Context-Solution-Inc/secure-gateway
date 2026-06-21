@@ -86,6 +86,15 @@ public final class HandshakeCoordinator {
     }
 
     private void acceptPeerEphemeral(byte[] peerEphPub) {
+        // The handshake is one-shot (SG-15): once the session exists, ignore any further
+        // TAG_HANDSHAKE frame instead of rebuilding. Rebuilding would mint a fresh Session
+        // with an empty anti-replay window (SG-02), so a malicious/compromised relay could
+        // re-inject the peer's original (cleartext) handshake frame to reset the replay
+        // guard and then replay previously delivered data frames. Dropping the duplicate
+        // keeps the established session and its replay state intact.
+        if (session != null) {
+            return;
+        }
         if (peerEphPub.length != Crypto.KEY_SIZE) {
             throw new IllegalArgumentException("peer ephemeral public key must be "
                     + Crypto.KEY_SIZE + " bytes");
