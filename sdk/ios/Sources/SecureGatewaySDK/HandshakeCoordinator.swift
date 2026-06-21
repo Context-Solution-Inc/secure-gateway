@@ -57,6 +57,13 @@ final class HandshakeCoordinator {
     }
 
     private func acceptPeerEphemeral(_ peerEphPub: Data) throws {
+        // The handshake is one-shot (SG-15): once the session exists, ignore any further
+        // TAG_HANDSHAKE frame instead of rebuilding. Rebuilding would mint a fresh Session
+        // with an empty anti-replay window (SG-02), letting a malicious/compromised relay
+        // re-inject the peer's original (cleartext) handshake frame to reset the replay guard
+        // and then replay previously delivered data frames. Dropping the duplicate keeps the
+        // established session and its replay state intact.
+        if session != nil { return }
         guard peerEphPub.count == Crypto.keySize else { throw CryptoError.badLength }
         session = try Session.create(idPriv: idPriv, peerIdPub: peerIdPub,
                                      ephPriv: ephPriv, peerEphPub: peerEphPub, role: myRole)
