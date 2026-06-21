@@ -87,6 +87,39 @@ func TestRepairEvictsRefreshTokens(t *testing.T) {
 	}
 }
 
+// TestRefreshTokenReuseRevokesChain is the SG-17 regression: presenting an
+// already-rotated (revoked, not merely expired) refresh token is a leaked-token
+// signal. Reuse detection must revoke the whole descendant chain for the device
+// and publish a revocation, so the attacker cannot keep a self-renewing chain
+// alive after racing the legitimate client's rotation.
+func TestRefreshTokenReuseRevokesChain(t *testing.T) {
+	a := newAuthHarnessNoBilling(t)
+	secret, licenseID := a.createAccountOpen(t, "acct_sg17")
+	mobileID := a.registerDevice(t, secret, "mobile")
+	desktopID := a.registerDevice(t, secret, "desktop")
+	pairID, _, _ := a.qrPair(t, secret, licenseID, mobileID, desktopID)
+
+	_, tok := a.issueToken(t, secret, mobileID, pairID)
+	if tok.RefreshToken == "" {
+		t.Fatal("expected a refresh token")
+	}
+
+	// Legitimate rotation: original -> rotated. The original is now revoked.
+	status, rotated := a.refreshToken(t, tok.RefreshToken)
+	if status != http.StatusOK || rotated.RefreshToken == "" {
+		t.Fatalf("first refresh should rotate successfully: status %d", status)
+	}
+
+	// Reuse the ORIGINAL (already-consumed) token: this trips reuse detection.
+	if status, _ := a.refreshToken(t, tok.RefreshToken); status == http.StatusOK {
+		t.Fatal("reused (already-rotated) refresh token must be rejected")
+	}
+	// The rotated descendant must now also be dead — the chain was revoked.
+	if status, _ := a.refreshToken(t, rotated.RefreshToken); status == http.StatusOK {
+		t.Fatal("descendant token must be revoked after reuse of an ancestor (chain revocation)")
+	}
+}
+
 // refreshRaw posts a refresh request directly (no t.Fatal), so it is safe to call
 // from concurrent goroutines.
 func refreshRaw(t *testing.T, baseURL, refresh string) int {

@@ -48,8 +48,10 @@ public final class ConnectionManager: NSObject {
     public var onStateChange: (ConnectionState) -> Void = { _ in }
 
     public init(wsURL: String, role: Role, myPriv: Data, peerPub: Data,
-                auth: AuthClient, token: String, refresh: String) {
-        self.wsURL = URL(string: wsURL)!
+                auth: AuthClient, token: String, refresh: String) throws {
+        // Enforce wss:// (except loopback/RFC1918 for LAN dev) and replace the old
+        // force-unwrap with a throwing, validated parse (SG-14/SG-19).
+        self.wsURL = try EndpointValidator.requireSecureRelay(wsURL)
         self.role = role
         self.myPriv = myPriv
         self.peerPub = peerPub

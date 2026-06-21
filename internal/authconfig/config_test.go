@@ -125,6 +125,26 @@ func TestNoStripeWithoutFlagRefusesToBoot(t *testing.T) {
 	}
 }
 
+func TestMetricsAddrValidation(t *testing.T) {
+	// Malformed (no port) and equal-to-listen both fail; a good host:port passes (SG-18).
+	bad := base()
+	bad["AUTH_METRICS_ADDR"] = "9090"
+	if _, err := loadFrom(env(bad)); err == nil || !strings.Contains(err.Error(), "AUTH_METRICS_ADDR") {
+		t.Fatalf("expected AUTH_METRICS_ADDR error for malformed addr, got %v", err)
+	}
+	same := base()
+	same["AUTH_LISTEN_ADDR"] = ":8080"
+	same["AUTH_METRICS_ADDR"] = ":8080"
+	if _, err := loadFrom(env(same)); err == nil || !strings.Contains(err.Error(), "must differ from AUTH_LISTEN_ADDR") {
+		t.Fatalf("expected differ-from-listen error, got %v", err)
+	}
+	ok := base()
+	ok["AUTH_METRICS_ADDR"] = ":9090"
+	if _, err := loadFrom(env(ok)); err != nil {
+		t.Fatalf("valid metrics addr rejected: %v", err)
+	}
+}
+
 func TestPartialStripeConfigErrorsAndNamesMissing(t *testing.T) {
 	all := []string{"AUTH_STRIPE_WEBHOOK_SECRET", "AUTH_STRIPE_SECRET_KEY", "AUTH_STRIPE_PRICE_ID"}
 	// Drop each var individually from a full config: any partial combination must

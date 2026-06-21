@@ -1,5 +1,6 @@
 package com.securegateway.mobile
 
+import com.securegateway.core.transport.EndpointValidator
 import com.securegateway.core.transport.Transport
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -30,6 +31,9 @@ class OkHttpWebSocketTransport(
     private val socket = AtomicReference<WebSocket?>(null)
 
     override fun connect(wsUrl: String, bearerToken: String, listener: Transport.Listener) {
+        // Enforce wss:// (except loopback/RFC1918) before dialing, so the Bearer token on the
+        // upgrade is never sent over cleartext ws:// from an untrusted QR endpoint (SG-14).
+        EndpointValidator.requireSecureRelay(wsUrl)
         // OkHttp's HttpUrl uses http/https; map the ws/wss scheme accordingly.
         val httpUrl = wsUrl.replaceFirst(Regex("^ws"), "http")
         logger("wss: dialing $httpUrl (token=${bearerToken.length}B)")

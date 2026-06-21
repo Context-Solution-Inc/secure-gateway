@@ -32,8 +32,10 @@ public final class AuthClient {
     private let baseURL: URL
     private let session: URLSession
 
-    public init(baseURL: String, session: URLSession = .shared) {
-        self.baseURL = URL(string: baseURL)!
+    public init(baseURL: String, session: URLSession = .shared) throws {
+        // Enforce https:// (except loopback/RFC1918 for LAN dev) and replace the old
+        // force-unwrap with a throwing, validated parse (SG-14/SG-19).
+        self.baseURL = try EndpointValidator.requireSecureAuth(baseURL)
         self.session = session
     }
 

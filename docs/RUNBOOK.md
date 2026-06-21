@@ -355,7 +355,11 @@ docker compose start redis
   removes it. The compose files pin `user: redis` on the service so it starts
   unprivileged and skips the drop. If you hit this, you're on an older copy of
   the compose file — pull the latest, or add `user: redis` to the `redis`
-  service yourself. (Postgres is unaffected: it keeps default capabilities.)
+  service yourself. **Postgres** is hardened the same way (`cap_drop:[ALL]`) but
+  keeps a minimal `cap_add` — `CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID` — so its
+  alpine entrypoint can still chown the data volume and `su-exec` down to the
+  unprivileged `postgres` user (SG-20). If Postgres fails to start after an upgrade
+  with a permissions error, confirm those caps are present on the service.
 - **`error mounting ".../Caddyfile" ... not a directory: Are you trying to mount
   a directory onto a file`** — the host path the compose file mounts (`./Caddyfile`,
   and likewise `./keys`/`.env`) didn't exist when you ran `up`, so Docker created
@@ -385,6 +389,7 @@ docker compose start redis
 | Var | Default | Purpose |
 |---|---|---|
 | `RELAY_LISTEN_ADDR` | `:8443` | bind address |
+| `RELAY_METRICS_ADDR` | — | private `/metrics` + `/healthz` listener (e.g. `:9090`); empty ⇒ served on the main listener. When set it is validated at boot: must parse as `host:port` and differ from `RELAY_LISTEN_ADDR`, so a typo fails startup instead of silently serving metrics nowhere (SG-18) |
 | `RELAY_TLS_CERT_FILE` / `RELAY_TLS_KEY_FILE` | — | enable `wss`; empty ⇒ plain HTTP behind a TLS proxy |
 | `RELAY_TLS_MIN_VERSION` | `1.2` | `1.2` or `1.3` |
 | `RELAY_JWT_ISSUER` | — | expected `iss` (required) |
@@ -416,6 +421,7 @@ docker compose start redis
 | Var | Default | Purpose |
 |---|---|---|
 | `AUTH_LISTEN_ADDR` | `:8080` | bind address |
+| `AUTH_METRICS_ADDR` | — | private `/metrics` + `/healthz` listener (e.g. `:9090`); empty ⇒ served on the main listener. Validated at boot: must parse as `host:port` and differ from `AUTH_LISTEN_ADDR`, so a typo fails startup instead of silently serving metrics nowhere (SG-18) |
 | `AUTH_TLS_CERT_FILE` / `AUTH_TLS_KEY_FILE` | — | enable TLS; empty ⇒ plain HTTP behind a proxy |
 | `AUTH_TLS_MIN_VERSION` | `1.2` | `1.2` or `1.3` |
 | `AUTH_STORE` | `memory` | `memory` or `postgres` |

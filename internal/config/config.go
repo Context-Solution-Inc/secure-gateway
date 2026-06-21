@@ -9,6 +9,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -220,6 +221,18 @@ func (c *Config) validate() error {
 	if c.RateLimitEnabled {
 		if c.RateLimitIPPerMin <= 0 || c.RateLimitIPBurst <= 0 {
 			errs = append(errs, errors.New("RELAY_RATELIMIT_IP_PER_MIN and RELAY_RATELIMIT_IP_BURST must be positive when RELAY_RATELIMIT_ENABLED=true"))
+		}
+	}
+
+	// A set-but-malformed metrics addr would fail to bind in a background
+	// goroutine while /metrics is already off the public mux — serving metrics
+	// nowhere (fail-open). Validate it up front so a typo fails boot (SG-18).
+	if c.MetricsAddr != "" {
+		if _, _, err := net.SplitHostPort(c.MetricsAddr); err != nil {
+			errs = append(errs, fmt.Errorf("RELAY_METRICS_ADDR %q is not a valid host:port: %w", c.MetricsAddr, err))
+		}
+		if c.MetricsAddr == c.ListenAddr {
+			errs = append(errs, errors.New("RELAY_METRICS_ADDR must differ from RELAY_LISTEN_ADDR"))
 		}
 	}
 

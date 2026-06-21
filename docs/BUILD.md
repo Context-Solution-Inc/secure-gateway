@@ -123,7 +123,11 @@ AUTH_TEST_DB_DSN='postgres://user:pass@localhost:5432/auth_test?sslmode=disable'
 ## Client SDKs
 
 Thin Relay Client SDKs live under [`sdk/`](../sdk) (a Gradle 8.7 / JDK 17
-multi-module build plus a Swift package). `sdk/core` holds all contract logic once
+multi-module build plus a Swift package). The Gradle wrapper is checksum-pinned
+(`distributionSha256Sum` in `sdk/gradle/wrapper/gradle-wrapper.properties`), so a
+tampered/MITM'd distribution is rejected before any build-time code runs (SG-13);
+bump that hash in lockstep with the `distributionUrl` when upgrading Gradle.
+`sdk/core` holds all contract logic once
 — FR-5 crypto, the wire protocol codec, the pairing/token HTTP client, the
 per-session handshake, and the reconnect/state machine — and the per-platform
 modules add transport, key storage, and an idiomatic facade. See

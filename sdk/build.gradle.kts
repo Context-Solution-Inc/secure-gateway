@@ -42,5 +42,8 @@ allprojects {
     // mavenLocal rather than reuse a cached 0.1.0.
     // 0.2.1: SG-15 fix — the handshake is one-shot so a replayed handshake frame can no
     // longer reset the SG-02 replay window. No wire/KDF change; interop-compatible with 0.2.0.
-    version = "0.2.1"
+    // 0.2.2: SG-14/SG-19 — transports reject non-wss:// relay / non-https:// auth endpoints
+    // (loopback/RFC1918 carve-out) and the iOS URL parse is failable, not force-unwrapped. No
+    // wire/KDF change; interop-compatible with 0.2.x.
+    version = "0.2.2"
 }

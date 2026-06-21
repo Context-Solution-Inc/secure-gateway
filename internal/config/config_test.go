@@ -91,6 +91,11 @@ func TestValidationErrors(t *testing.T) {
 		{"slot ttl too small", func(m map[string]string) { m["RELAY_SLOT_TTL"] = "30s" }, "must exceed 2x"},
 		{"bad duration", func(m map[string]string) { m["RELAY_PING_INTERVAL"] = "soon" }, "RELAY_PING_INTERVAL"},
 		{"bad log level", func(m map[string]string) { m["RELAY_LOG_LEVEL"] = "loud" }, "RELAY_LOG_LEVEL"},
+		{"metrics addr no port", func(m map[string]string) { m["RELAY_METRICS_ADDR"] = "9090" }, "RELAY_METRICS_ADDR"},
+		{"metrics addr equals listen", func(m map[string]string) {
+			m["RELAY_LISTEN_ADDR"] = ":8443"
+			m["RELAY_METRICS_ADDR"] = ":8443"
+		}, "must differ from RELAY_LISTEN_ADDR"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,6 +109,14 @@ func TestValidationErrors(t *testing.T) {
 				t.Errorf("error %q does not contain %q", err.Error(), tt.substr)
 			}
 		})
+	}
+}
+
+func TestMetricsAddrValid(t *testing.T) {
+	m := valid()
+	m["RELAY_METRICS_ADDR"] = ":9090"
+	if _, err := loadFrom(env(m)); err != nil {
+		t.Fatalf("valid metrics addr rejected: %v", err)
 	}
 }
 

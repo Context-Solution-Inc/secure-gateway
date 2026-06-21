@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.securegateway.core.Role;
+import com.securegateway.core.transport.EndpointValidator;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,6 +29,9 @@ public final class AuthClient {
     private final ObjectMapper mapper = new ObjectMapper();
 
     public AuthClient(String baseUrl) {
+        // Enforce https:// (except loopback/RFC1918 for LAN dev) before any request,
+        // so a malicious QR cannot send account/connection secrets in cleartext (SG-14).
+        EndpointValidator.requireSecureAuth(baseUrl);
         // Normalize trailing slash so path joins are predictable.
         this.baseUrl = URI.create(baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
     }

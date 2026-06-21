@@ -65,7 +65,7 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 	mux.HandleFunc("POST /v1/accounts/claim", s.limit(svc.handleClaimAccount))
 	mux.HandleFunc("GET /v1/subscription", s.limit(svc.handleGetSubscription))
 	mux.HandleFunc("POST /v1/billing-portal", s.limit(svc.handleBillingPortal))
-	mux.HandleFunc("POST /v1/devices", svc.handleRegisterDevice)
+	mux.HandleFunc("POST /v1/devices", s.limit(svc.handleRegisterDevice))
 	// Sensitive endpoints (pairing + token issuance/refresh) are rate limited.
 	mux.HandleFunc("POST /v1/pairing-tokens", s.limit(svc.handleCreatePairingToken))
 	mux.HandleFunc("POST /v1/pairing-tokens/poll", svc.handlePollPairingToken)
@@ -78,11 +78,17 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Full set of timeouts so slow-body POSTs, slow response drains, and idle
+	// keep-alives are time-bounded, not just the header read (SG-08). The 1 MiB
+	// body cap bounds bytes; these bound wall-clock.
 	s.http = &http.Server{
 		Addr:              cfg.ListenAddr,
 		Handler:           httpsec.HSTS(mux), // HSTS on the HTTP surface (PRD §10.2)
 		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	if cfg.MetricsAddr != "" {
@@ -93,6 +99,9 @@ func NewServer(svc *Service, cfg ServerConfig) (*Server, error) {
 			Addr:              cfg.MetricsAddr,
 			Handler:           mmux,
 			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
 		}
 	}
 	return s, nil

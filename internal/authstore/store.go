@@ -27,6 +27,10 @@ var (
 	// ErrConflict is returned when a uniqueness constraint is violated (e.g. a
 	// pairing already exists for the device pair).
 	ErrConflict = errors.New("authstore: conflict")
+	// ErrCapacityExceeded is returned by CreatePairingWithinCapacity when the
+	// license is already at its licensed max_pairs, so the atomic count+insert
+	// refuses to over-subscribe (SG-16, FR-2.2).
+	ErrCapacityExceeded = errors.New("authstore: capacity exceeded")
 )
 
 // SubStatus is the raw Stripe subscription status, mirrored verbatim so license
@@ -240,9 +244,23 @@ type Store interface {
 	// Devices.
 	UpsertDevice(ctx context.Context, d Device) error
 	GetDevice(ctx context.Context, id string) (Device, error)
+	// CountDevicesByAccount returns how many device rows the account owns, for
+	// the per-account registration cap (SG-10).
+	CountDevicesByAccount(ctx context.Context, accountID string) (int, error)
+	// FindDeviceByAccountRoleKey returns the existing device for the given
+	// account+role+public_key, used to make re-registration idempotent (SG-10).
+	// It returns ErrNotFound when no such device exists. A nil/empty publicKey
+	// never matches, since a keyless device is not yet uniquely identifiable.
+	FindDeviceByAccountRoleKey(ctx context.Context, accountID string, role token.Role, publicKey []byte) (Device, error)
 
 	// Pairings.
 	CreatePairing(ctx context.Context, p Pairing) error
+	// CreatePairingWithinCapacity atomically verifies the license has a free
+	// pair slot (active pairings < maxPairs) and inserts p in one transaction,
+	// closing the TOCTOU between the capacity check and the insert (SG-16,
+	// FR-2.2). It returns ErrCapacityExceeded when the license is already full
+	// and ErrConflict on a duplicate pair_id.
+	CreatePairingWithinCapacity(ctx context.Context, p Pairing, maxPairs int) error
 	GetPairing(ctx context.Context, pairID string) (Pairing, error)
 	ListActivePairingsByLicense(ctx context.Context, licenseID string) ([]Pairing, error)
 	ListActivePairingsByAccount(ctx context.Context, accountID string) ([]Pairing, error)

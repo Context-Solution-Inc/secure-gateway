@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/lley154/secure-gateway/internal/backplane"
 	"github.com/lley154/secure-gateway/internal/license"
 	"github.com/lley154/secure-gateway/internal/logging"
 	"github.com/lley154/secure-gateway/internal/signer"
@@ -167,8 +169,30 @@ func (s *Service) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	ctx := r.Context()
+	// Idempotent re-registration: a repeat of the same account+role+public_key
+	// returns the existing device instead of inserting a new row, so a client
+	// retrying registration does not amplify rows (SG-10). Keyless devices are
+	// not yet uniquely identifiable, so they fall through to the capped insert.
+	if len(pub) > 0 {
+		if existing, err := s.store.FindDeviceByAccountRoleKey(ctx, accountID, role, pub); err == nil {
+			writeJSON(w, http.StatusOK, deviceResp{DeviceID: existing.ID})
+			return
+		} else if !errors.Is(err, authstore.ErrNotFound) {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
+	}
+	// Per-account device cap bounds datastore/cost-amplification abuse (SG-10).
+	if count, err := s.store.CountDevicesByAccount(ctx, accountID); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	} else if count >= s.deviceCap {
+		writeErr(w, http.StatusConflict, "device_limit")
+		return
+	}
 	dev := authstore.Device{ID: authstore.NewID("dev"), AccountID: accountID, Role: role, PublicKey: pub, CreatedAt: s.now()}
-	if err := s.store.UpsertDevice(r.Context(), dev); err != nil {
+	if err := s.store.UpsertDevice(ctx, dev); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error")
 		return
 	}
@@ -233,7 +257,26 @@ func (s *Service) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rt, err := s.store.GetRefreshToken(ctx, hashSecret(req.RefreshToken))
-	if err != nil || !rt.Active(s.now()) {
+	if err != nil {
+		s.rejectToken(w, http.StatusUnauthorized, "refresh_invalid")
+		return
+	}
+	if !rt.Active(s.now()) {
+		// Reuse detection (SG-17): the row exists but is already revoked (not
+		// merely expired) => a single-use token was presented a second time.
+		// Since rotation revokes the original, this is the classic leaked-token
+		// signal: the attacker rotated a copy while the legitimate descendant
+		// chain is still live. Revoke the whole chain for this device and cut any
+		// live session, then reject — a leaked token can no longer self-renew.
+		if !rt.RevokedAt.IsZero() {
+			if err := s.store.RevokeRefreshTokensByDevice(ctx, rt.DeviceID, s.now()); err != nil {
+				s.log.Error("refresh reuse: revoke chain failed",
+					logging.FieldDeviceID, rt.DeviceID, logging.FieldReason, err.Error())
+			}
+			s.publishRevocation(ctx, backplane.RevocationEvent{PairID: rt.PairID, AccountID: rt.AccountID})
+			s.log.Warn("refresh token reuse detected; revoked device token chain",
+				logging.FieldDeviceID, rt.DeviceID, "pair_id", rt.PairID)
+		}
 		s.rejectToken(w, http.StatusUnauthorized, "refresh_invalid")
 		return
 	}

@@ -37,6 +37,7 @@ type Service struct {
 	checkoutPriceID string // Stripe price id for the desktop subscription plan
 	claimTTL        time.Duration
 	billingEnabled  bool // when false, secure links are ungated and an open license is auto-provisioned
+	deviceCap       int  // max device rows per account; rejects further registrations (SG-10)
 	now             func() time.Time
 }
 
@@ -60,6 +61,7 @@ type Deps struct {
 	CheckoutPriceID string
 	ClaimTTL        time.Duration
 	BillingEnabled  bool             // when false, gating is bypassed and an open license is auto-provisioned
+	DeviceCap       int              // optional; per-account device cap (SG-10), defaults to defaultDeviceCap
 	Now             func() time.Time // optional; defaults to time.Now
 }
 
@@ -81,11 +83,21 @@ func NewService(d Deps) *Service {
 	if claimTTL <= 0 {
 		claimTTL = 30 * time.Minute // must outlive a payment + browser return
 	}
+	deviceCap := d.DeviceCap
+	if deviceCap <= 0 {
+		deviceCap = defaultDeviceCap
+	}
 	return &Service{
 		store: d.Store, signer: d.Signer, proc: d.Processor, bp: d.Backplane, metrics: d.Metrics, log: log,
 		issuer: d.Issuer, audience: d.Audience, tokenTTL: d.TokenTTL, refreshTTL: d.RefreshTTL,
 		pairingTokenTTL: pairingTTL, grace: d.Grace, adminKey: d.AdminKey,
 		relayURL: d.RelayURL, authURL: d.AuthURL,
-		checkoutPriceID: d.CheckoutPriceID, claimTTL: claimTTL, billingEnabled: d.BillingEnabled, now: now,
+		checkoutPriceID: d.CheckoutPriceID, claimTTL: claimTTL, billingEnabled: d.BillingEnabled,
+		deviceCap: deviceCap, now: now,
 	}
 }
+
+// defaultDeviceCap bounds device rows per account when Deps.DeviceCap is unset
+// (SG-10). A pairing needs only a mobile + a desktop device; 10 leaves ample
+// headroom for re-registrations and multiple installs while bounding abuse.
+const defaultDeviceCap = 10

@@ -10,6 +10,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/lley154/secure-gateway/internal/backplane"
 	"github.com/lley154/secure-gateway/internal/logging"
 	"github.com/lley154/secure-gateway/internal/relay/protocol"
 	"github.com/lley154/secure-gateway/internal/token"
@@ -297,14 +299,21 @@ func (s *Session) doPing() bool {
 	return s.conn.Ping(ctx) == nil
 }
 
-// renew extends the backplane slot TTL; failure means we were superseded.
+// renew extends the backplane slot TTL on heartbeat. A confirmed loss of slot
+// ownership (ErrNotSlotOwner) means another connection superseded us, so we
+// self-close immediately rather than relying solely on the best-effort eviction
+// channel — which can drop on a full queue and otherwise leave us running
+// (SG-05). Transient transport errors (timeouts, backplane blips) are left for
+// the next heartbeat tick; the slot TTL outlives a single missed renewal.
 func (s *Session) renew() {
 	if s.renewSlot == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
 	defer cancel()
-	_ = s.renewSlot(ctx)
+	if err := s.renewSlot(ctx); errors.Is(err, backplane.ErrNotSlotOwner) {
+		s.CloseWith(protocol.CloseSuperseded, "slot lost")
+	}
 }
 
 // resetTimer safely resets t to fire after d.

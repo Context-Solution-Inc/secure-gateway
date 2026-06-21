@@ -27,7 +27,7 @@ public final class MobileClient {
         self.accountSecret = accountSecret
         self.keyStore = keyStore
         self.pushWaker = pushWaker
-        self.auth = AuthClient(baseURL: authURL)
+        self.auth = try AuthClient(baseURL: authURL)
         self.identity = try keyStore.loadOrCreateIdentity()
     }
 
@@ -53,8 +53,8 @@ public final class MobileClient {
             throw CryptoError.badLength
         }
         let tok = try await auth.issueToken(accountSecret: accountSecret, deviceId: dev, pairId: pid)
-        let mgr = ConnectionManager(wsURL: url, role: .mobile, myPriv: identity.privateKey, peerPub: peer,
-                                    auth: auth, token: tok.token, refresh: tok.refreshToken)
+        let mgr = try ConnectionManager(wsURL: url, role: .mobile, myPriv: identity.privateKey, peerPub: peer,
+                                        auth: auth, token: tok.token, refresh: tok.refreshToken)
         mgr.onMessage = onMessage
         mgr.onStateChange = onStateChange
         manager = mgr
