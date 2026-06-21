@@ -52,10 +52,10 @@ change.
 | T4 | **Subscription lapse / fraud** | License derived from Stripe state; token refresh re-checks license; immediate revocation channel closes live sessions ≤ 2s (4004). | Mitigated (≤15m graceful / ≤2s immediate). |
 | T5 | **Forged Stripe webhooks** | Mandatory signature verification; idempotent, durable handlers; nightly reconciliation heals missed/forged events. | Mitigated. |
 | T6 | **Connection-flood / DoS at the relay** | Per-IP connection-attempt rate limiting (pre-upgrade 429 + Retry-After). | Mitigated per-instance (see §4). |
-| T7 | **Auth-endpoint abuse** (credential stuffing, token-mint flood) | Per-IP + per-account rate limiting on token/pairing endpoints (429 + Retry-After). | Mitigated per-instance. |
+| T7 | **Auth-endpoint abuse** (credential stuffing, token-mint flood, device-row amplification, slow-body/slow-read) | Per-IP + per-account rate limiting on token/pairing **and device-registration** endpoints (429 + Retry-After); `POST /v1/devices` is capped per account with idempotent re-registration of the same role+key (SG-10); full HTTP timeouts (`Read`/`Write`/`Idle`, not just header) bound slow-loris connections on both auth listeners (SG-08). | Mitigated per-instance. |
 | T8 | **Protocol abuse / oversize frames** | Oversize/garbage frames closed with 4005; repeat offenders earn a temporary IP ban. | Mitigated per-instance. |
 | T9 | **Signing-key compromise** | Key only in the auth service (HSM/KMS where available); rotated ≤90 days via JWKS; relay holds public key only. | Process control (key custody). |
-| T10 | **MITM / downgrade** | TLS 1.2+ only, explicit modern ECDHE/AEAD cipher allow-list, HSTS on the HTTP surfaces. | Mitigated. |
+| T10 | **MITM / downgrade** | TLS 1.2+ only, explicit modern ECDHE/AEAD cipher allow-list, HSTS on the HTTP surfaces. Client SDKs additionally reject a non-`wss://` relay (or non-`https://` auth) endpoint read from the **untrusted QR**, so a malicious QR cannot downgrade the connection JWT to cleartext — except for loopback/RFC1918 hosts (LAN-dev carve-out) (SG-14/SG-19). | Mitigated. |
 | T11 | **Stolen-token-alone use** (bearer not bound to device) | **FR-3.7 sender-constrained tokens — deferred to Phase 2** (see §5). | Accepted residual (bounded by T1's short TTL). |
 
 ## 4. New M5 controls and their limitations
@@ -143,5 +143,13 @@ older clients continue to work.
   + `TestCheckoutStartRejectsNonLoopbackRedirect` (loopback-only) in
   `test/integration`; `TestVerifyAcceptsMismatchedAPIVersion` in `internal/billing`.
 - TLS hardening: `internal/httpsec` tests (HSTS, cipher allow-list).
+- SDK transport security: `EndpointValidator` tests (JVM + Swift) — `wss`/`https` required,
+  loopback/RFC1918 carve-out, malformed-URL rejection (SG-14/SG-19).
+- Capacity / abuse bounds: `TestPairingCapacityNotExceededUnderConcurrency` (SG-16 atomic
+  `max_pairs`), `TestDeviceRegistrationCap` / `…Idempotent` (SG-10), and refresh reuse detection
+  `TestRefreshTokenReuseRevokesChain` (SG-17) in `test/integration`.
+- Config fail-closed: metrics-addr validation tests in `internal/config` / `internal/authconfig`
+  (SG-18); superseded-slot self-close `TestRenewSelfClosesOnSlotLoss` in `internal/relay/session`
+  (SG-05).
 - Run `/security-review` and `/code-review` (high) over the relay connect path,
   pairing flow, and `internal/ratelimit` before each release; resolve highs.

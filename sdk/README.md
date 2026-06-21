@@ -82,6 +82,13 @@ When the flag is off, the app keeps its legacy local QR-sync path. The QR payloa
 storage (`KeyStore`) and push-to-wake (`PushWaker`) are injected, so the host supplies the
 platform implementations (Android Keystore/FCM, iOS Keychain/APNs, desktop OS keystore).
 
+**Endpoint security (0.2.2+).** The relay/auth endpoints read from the (untrusted) QR are
+validated before use (`EndpointValidator`, mirrored in JVM + Swift): the relay endpoint must be
+`wss://` and the auth endpoint `https://`, so a malicious QR cannot downgrade the connection JWT
+(carried as `Authorization: Bearer`) to cleartext. Plaintext `ws://`/`http://` is allowed **only**
+for loopback or RFC1918 private hosts (LAN development). An insecure or malformed endpoint throws
+(`IllegalArgumentException` on the JVM, `EndpointError` on iOS — replacing the old force-unwrap).
+
 ## Lifecycle: pairing, reconnect, unpair
 
 The QR's **pairing token is single-use** — it authorizes exactly one `completePairing`. A host
