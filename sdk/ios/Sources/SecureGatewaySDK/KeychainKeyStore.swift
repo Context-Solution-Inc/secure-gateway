@@ -28,7 +28,7 @@ public final class KeychainKeyStore: KeyStore {
     private let account: String
     private let service: String
 
-    public init(service: String = "com.securegateway.sdk", account: String = "x25519-identity") {
+    public init(service: String = "com.contextsolutions.securegateway.sdk", account: String = "x25519-identity") {
         self.service = service
         self.account = account
     }

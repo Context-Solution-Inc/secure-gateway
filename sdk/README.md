@@ -71,7 +71,7 @@ iOS (macOS only): `cd ios && swift test`.
 
 ## Publishing (M4)
 
-The SDK publishes `com.securegateway:{core,java,android}` two ways:
+The SDK publishes `com.contextsolutions.securegateway:{core,java,android}` two ways:
 
 ```sh
 ./gradlew publishToMavenLocal     # local dev — mobile-agent consumes from ~/.m2 (keyless)

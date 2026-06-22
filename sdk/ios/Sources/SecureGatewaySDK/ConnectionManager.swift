@@ -34,7 +34,7 @@ public final class ConnectionManager: NSObject {
     private var token: String
     private var refresh: String
 
-    private let queue = DispatchQueue(label: "com.securegateway.conn")
+    private let queue = DispatchQueue(label: "com.contextsolutions.securegateway.conn")
     private var task: URLSessionWebSocketTask?
     private var urlSession: URLSession!
     private var handshake: HandshakeCoordinator?

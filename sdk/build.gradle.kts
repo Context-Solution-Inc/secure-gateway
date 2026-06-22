@@ -16,7 +16,7 @@ subprojects {
 
     // Publishing (M4):
     //  - `./gradlew publishToMavenLocal` — local dev; the mobile-agent client consumes
-    //    com.securegateway:{core,java,android}:<version> from mavenLocal during co-development.
+    //    com.contextsolutions.securegateway:{core,java,android}:<version> from mavenLocal during co-development.
     //  - `./gradlew publish` — pushes the GPG-signed artifacts to GitHub Packages
     //    (see .github/workflows/publish-sdk.yml). The consumer (local-agent) pins these via
     //    Gradle dependency verification, so the published jars are signed.
@@ -48,7 +48,7 @@ subprojects {
     //    is :android-aar.
     //  - :android-aar is a com.android.library (no `java` component); it configures its
     //    own publication (from the Android `release` variant, artifactId "android") and its
-    //    own signing in its build script — so the com.securegateway:android coordinate is
+    //    own signing in its build script — so the com.contextsolutions.securegateway:android coordinate is
     //    preserved.
     if (name == "core" || name == "java") {
         afterEvaluate {
@@ -66,7 +66,7 @@ subprojects {
 }
 
 allprojects {
-    group = "com.securegateway"
+    group = "com.contextsolutions.securegateway"
     // 0.2.0: breaking E2EE handshake change (v1 -> v2 ephemeral forward secrecy,
     // SG-01) plus replay protection (SG-02). Bumped so consumers re-resolve from
     // mavenLocal rather than reuse a cached 0.1.0.
