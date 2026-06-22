@@ -1,3 +1,5 @@
+import org.gradle.plugins.signing.SigningExtension
+
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
@@ -54,14 +56,57 @@ dependencies {
 }
 
 // Preserve the com.securegateway:android coordinate (mobile-agent consumes it unchanged):
-// publish the Android `release` variant under artifactId "android", not the module name.
+// publish the Android `release` variant under artifactId "android", not the module name. The
+// GitHub Packages repository is wired by the root build's subprojects block (M4); here we add
+// the POM metadata + GPG signing for this module's own `release` publication (the root can't —
+// the `release` component only exists after AGP evaluates this module).
 afterEvaluate {
     extensions.configure<PublishingExtension> {
         publications {
             create<MavenPublication>("release") {
                 from(components["release"])
                 artifactId = "android"
+                pom {
+                    name.set("Secure Gateway SDK (android)")
+                    description.set(
+                        "End-to-end-encrypted mobile↔desktop relay client SDK " +
+                            "(libsodium X25519 + XChaCha20-Poly1305), Android/lazysodium-android build.",
+                    )
+                    url.set("https://github.com/Context-Solution-Inc/secure-gateway")
+                    licenses {
+                        license {
+                            name.set("MIT License")
+                            url.set("https://github.com/Context-Solution-Inc/secure-gateway/blob/main/LICENSE")
+                        }
+                    }
+                    developers {
+                        developer {
+                            name.set("Context Solutions Inc.")
+                            organization.set("Context Solutions Inc.")
+                            organizationUrl.set("https://github.com/Context-Solution-Inc")
+                        }
+                    }
+                    scm {
+                        url.set("https://github.com/Context-Solution-Inc/secure-gateway")
+                        connection.set("scm:git:https://github.com/Context-Solution-Inc/secure-gateway.git")
+                        developerConnection.set("scm:git:git@github.com:Context-Solution-Inc/secure-gateway.git")
+                    }
+                }
             }
+        }
+    }
+
+    // GPG-sign when a key is configured (CI release); publish unsigned for keyless dev /
+    // publishToMavenLocal. Mirrors signSdkPublications() in the root build (the helper
+    // functions there aren't visible across build scripts).
+    val signingKey = (findProperty("signingKey") as String?) ?: System.getenv("SIGNING_KEY")
+    val signingPassword = (findProperty("signingPassword") as String?) ?: System.getenv("SIGNING_PASSWORD")
+    if (signingKey.isNullOrBlank()) {
+        logger.lifecycle("secure-gateway :android-aar: no signing key — publishing UNSIGNED (ok for mavenLocal/dev).")
+    } else {
+        extensions.configure<SigningExtension> {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+            sign(extensions.getByType<PublishingExtension>().publications)
         }
     }
 }

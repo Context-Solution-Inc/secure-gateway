@@ -1,0 +1,53 @@
+name: Publish SDK
+
+# M4 — Publish the GPG-signed Secure Gateway client SDK
+# (com.securegateway:{core,java,android}) to this repo's GitHub Packages Maven registry,
+# so the mobile-agent consumer can resolve + SHA/signature-pin it instead of mavenLocal.
+#
+# Triggered by publishing a GitHub Release (the release is the human gate; the artifact
+# version is whatever `allprojects { version }` is set to in sdk/build.gradle.kts — bump it
+# in lockstep with the consumer). Also runnable on demand.
+#
+# Required repository/org secrets for SIGNED releases:
+#   SDK_SIGNING_KEY      — ASCII-armored GPG private key (the whole block, incl. headers).
+#   SDK_SIGNING_PASSWORD — its passphrase.
+# Without them the build still publishes, but UNSIGNED (the gradle build logs a warning).
+# GITHUB_TOKEN is the built-in token; `packages: write` lets it publish to this repo.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Publish to GitHub Packages
+        run: ./gradlew publish --no-daemon --stacktrace
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNING_KEY: ${{ secrets.SDK_SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SDK_SIGNING_PASSWORD }}
