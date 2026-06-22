@@ -1,7 +1,7 @@
 name: Publish SDK
 
 # M4 — Publish the GPG-signed Secure Gateway client SDK
-# (com.securegateway:{core,java,android}) to this repo's GitHub Packages Maven registry,
+# (com.contextsolutions.securegateway:{core,java,android}) to this repo's GitHub Packages Maven registry,
 # so the mobile-agent consumer can resolve + SHA/signature-pin it instead of mavenLocal.
 #
 # Triggered by publishing a GitHub Release (the release is the human gate; the artifact

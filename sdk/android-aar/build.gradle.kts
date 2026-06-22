@@ -9,9 +9,9 @@ plugins {
 // The REAL Android library: the same mobile SDK Kotlin sources as :android, but built as a
 // com.android.library on lazysodium-android (native arm64 libsodium) so the relay crypto
 // actually runs on a Pixel 7. The plain-JVM :android stays for the hermetic e2eTest; this
-// module is what ships and what publishes the com.securegateway:android coordinate.
+// module is what ships and what publishes the com.contextsolutions.securegateway:android coordinate.
 android {
-    namespace = "com.securegateway.mobile"
+    namespace = "com.contextsolutions.securegateway.mobile"
     compileSdk = 35
 
     defaultConfig {
@@ -55,7 +55,7 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.17.0@aar")
 }
 
-// Preserve the com.securegateway:android coordinate (mobile-agent consumes it unchanged):
+// Preserve the com.contextsolutions.securegateway:android coordinate (mobile-agent consumes it unchanged):
 // publish the Android `release` variant under artifactId "android", not the module name. The
 // GitHub Packages repository is wired by the root build's subprojects block (M4); here we add
 // the POM metadata + GPG signing for this module's own `release` publication (the root can't —

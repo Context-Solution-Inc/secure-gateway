@@ -56,7 +56,7 @@ tasks.register<JavaExec>("manualE2E") {
     description = "Drive the Kotlin mobile <-> Java desktop SDKs against an ALREADY-RUNNING relay + auth."
     group = "verification"
     classpath = e2eTest.runtimeClasspath
-    mainClass.set("com.securegateway.e2e.ManualE2E")
+    mainClass.set("com.contextsolutions.securegateway.e2e.ManualE2E")
     // Point at the manually-started services; defaults match the README's manual setup.
     systemProperty("authUrl", providers.systemProperty("authUrl").getOrElse("http://127.0.0.1:8080"))
     systemProperty("wsUrl", providers.systemProperty("wsUrl").getOrElse("ws://127.0.0.1:8443/v1/connect"))
