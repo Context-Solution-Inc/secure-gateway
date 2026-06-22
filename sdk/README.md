@@ -69,6 +69,31 @@ driver (and/or the license isn't seeded) — use the override above. See the rep
 
 iOS (macOS only): `cd ios && swift test`.
 
+## Publishing (M4)
+
+The SDK publishes `com.securegateway:{core,java,android}` two ways:
+
+```sh
+./gradlew publishToMavenLocal     # local dev — mobile-agent consumes from ~/.m2 (keyless)
+./gradlew publish                 # push GPG-signed artifacts to GitHub Packages
+```
+
+`publish` targets this repo's **GitHub Packages** Maven registry
+(`https://maven.pkg.github.com/Context-Solution-Inc/secure-gateway`). Credentials come from
+gradle props `gpr.user`/`gpr.key` or env `GITHUB_ACTOR`/`GITHUB_TOKEN` (a PAT / the Actions
+token with `read:packages` to consume, `write:packages` to publish).
+
+**Signing** is in-memory GPG: set `signingKey` (ASCII-armored private key) + `signingPassword`
+gradle props, or env `SIGNING_KEY`/`SIGNING_PASSWORD`. With no key the build publishes
+**unsigned** (fine for `publishToMavenLocal`); a release SHOULD sign so the consumer can pin the
+signature via Gradle dependency verification. CI does this on a published GitHub Release via
+[`.github/workflows/publish-sdk.yml`](../.github/workflows/publish-sdk.yml) using the
+`SDK_SIGNING_KEY` / `SDK_SIGNING_PASSWORD` secrets.
+
+The published `version` is `allprojects { version }` in `build.gradle.kts` — bump it in
+lockstep with the consumer's `libs.versions.toml` + `verification-metadata.xml` regen so a stale
+mavenLocal jar can't shadow the signed remote.
+
 ## Host-app integration seam (feature flag)
 
 Each platform exposes one entry point the host toggles behind its relay feature flag:
