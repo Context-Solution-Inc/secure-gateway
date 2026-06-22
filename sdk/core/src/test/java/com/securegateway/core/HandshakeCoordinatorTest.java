@@ -72,8 +72,49 @@ class HandshakeCoordinatorTest {
         assertThrows(Session.ReplayException.class, () -> d.onFrame(data, "id-1", 1_000L));
     }
 
+    // Peer-reconnect re-key: when the peer reconnects with a FRESH ephemeral (a genuinely new
+    // handshake, not a replay), the survivor must rebuild its session to match — otherwise it
+    // keeps stale keys and silently drops every subsequent data frame (the "green-but-hung after
+    // reconnect" bug). The SG-15 replay guard is unaffected: the new ephemeral derives new keys,
+    // so no frame captured under the old session decrypts under the new one.
+    @Test
+    void newPeerEphemeralRebuildsSession() {
+        KeyPair mobile = Crypto.generateKeyPair();
+        KeyPair desktop = Crypto.generateKeyPair();
+        HandshakeCoordinator m = new HandshakeCoordinator(mobile.privateKey(), desktop.publicKey(), Role.MOBILE);
+        HandshakeCoordinator d = new HandshakeCoordinator(desktop.privateKey(), mobile.publicKey(), Role.DESKTOP);
+
+        assertNull(d.onFrame(m.handshakeFrame(), "h", 0));
+        assertNull(m.onFrame(d.handshakeFrame(), "h", 0));
+        Session established = d.session();
+
+        // Original session works.
+        byte[] p1 = "command-1".getBytes(StandardCharsets.UTF_8);
+        assertArrayEquals(p1, d.onFrame(m.sealFrame("id-1", 1_000L, p1), "id-1", 1_000L));
+
+        // Mobile genuinely reconnects: a fresh HandshakeCoordinator (new ephemeral, same identity).
+        HandshakeCoordinator m2 = new HandshakeCoordinator(mobile.privateKey(), desktop.publicKey(), Role.MOBILE);
+        // Survivor (desktop) re-keys on the new ephemeral...
+        assertNull(d.onFrame(m2.handshakeFrame(), "h2", 0));
+        assertNotSame(established, d.session(), "a new peer ephemeral must rebuild the session");
+        // ...and the reconnected peer builds its session against the desktop's (unchanged) ephemeral.
+        assertNull(m2.onFrame(d.handshakeFrame(), "h2", 0));
+
+        // The re-keyed session interops.
+        byte[] p2 = "command-2".getBytes(StandardCharsets.UTF_8);
+        assertArrayEquals(p2, d.onFrame(m2.sealFrame("id-2", 2_000L, p2), "id-2", 2_000L));
+
+        // A frame sealed under the OLD session no longer opens on the desktop (keys changed).
+        byte[] stale = m.sealFrame("id-3", 3_000L, p2);
+        assertThrows(RuntimeException.class, () -> d.onFrame(stale, "id-3", 3_000L));
+    }
+
     private static void assertSame(Object expected, Object actual, String msg) {
         org.junit.jupiter.api.Assertions.assertSame(expected, actual, msg);
+    }
+
+    private static void assertNotSame(Object unexpected, Object actual, String msg) {
+        org.junit.jupiter.api.Assertions.assertNotSame(unexpected, actual, msg);
     }
 
     private static void assertEquals(byte expected, byte actual) {

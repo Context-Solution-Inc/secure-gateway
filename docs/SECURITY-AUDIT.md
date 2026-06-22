@@ -20,6 +20,14 @@ correctness and regressions, not just a checklist of what was fixed. Corroborate
 >   SG-17, SG-18, SG-19, SG-20. The status lines and checklist below are refreshed to *resolved*;
 >   the finding descriptions are retained for the record. The consumer app bump to SDK 0.2.2 is
 >   tracked in the local-agent repo (PR #12).
+>
+> **Update (2026-06-22, SDK 0.2.3):** the SG-15 one-shot guard was found to over-block — it also
+> ignored a *legitimate* re-handshake when a peer reconnected with a **new** ephemeral, so the
+> surviving side kept stale session keys and silently dropped every subsequent frame (sockets
+> green, prompts hung). Fixed in **0.2.3**: the guard now ignores only an **identical** (replayed)
+> ephemeral and rebuilds the session on a **different** one. The SG-15 replay vector stays closed —
+> see [SG-15 reconnect re-key](#sg-15-reconnect--re-key-while-keeping-the-replay-guard-closed-sdk-023)
+> below.
 
 ---
 
@@ -92,6 +100,30 @@ root cause and is consolidated here as SG-15.) 10 further candidates were invest
 - **Remediation (shipped):** Make the handshake one-shot per coordinator — ignore `TAG_HANDSHAKE`
   once `session != null`. Applied identically in Java and Swift; regression test added. Shipped as
   SDK `0.2.1`.
+
+#### SG-15 reconnect · Re-key while keeping the replay guard closed (SDK 0.2.3)
+- **Status:** ✅ **RESOLVED** — fixed in SDK **0.2.3**: `acceptPeerEphemeral` now stores the peer
+  ephemeral that built the current session and branches on it — an **identical** ephemeral is
+  ignored (SG-15 holds), a **different** ephemeral rebuilds the session. Applied identically in
+  `HandshakeCoordinator.java` and `.swift`; the `ConnectionManager` `SYS_PEER_ONLINE` resend
+  comment was corrected. New unit test `newPeerEphemeralRebuildsSession` and an e2e
+  `peerReconnectReKeysAndStillDelivers` case (Kotlin↔Java over the real Go relay) cover it; the
+  existing `handshakeIsOneShotAndPreservesReplayGuard` is retained unchanged.
+- **Severity:** Functional regression of the SG-15 fix (availability, not a confidentiality break)
+  · **Dimension:** Crypto / SDK
+- **Description:** The SG-15 one-shot guard (`if (session != null) return;`) ignored **every**
+  further `TAG_HANDSHAKE` frame, including the legitimate fresh handshake a peer sends after it
+  reconnects (`ConnectionManager.handleOpen` mints a new `HandshakeCoordinator` → new ephemeral).
+  The surviving side kept its old directional keys while the reconnected peer derived new ones, so
+  `deliverData`'s AEAD-open failed and **silently dropped** every subsequent frame. Triggered when
+  the mobile toggles its connection off/on, or the desktop restarts (PR #77/#91 socket-level
+  reconnect keeps the link "green").
+- **Security argument (the SG-15 vector stays closed):** a **replayed** handshake carries the same
+  ephemeral as the one that built the session, so it is still ignored — a compromised relay cannot
+  re-inject the peer's original cleartext handshake to mint a fresh `Session` with an empty replay
+  window. A handshake with a **different** ephemeral derives **different** session keys, so no data
+  frame captured under the old session decrypts under the new one — allowing the re-key enables no
+  replay. Forward secrecy (SG-01) is unchanged.
 
 ### Medium — ✅ resolved in PR #4
 

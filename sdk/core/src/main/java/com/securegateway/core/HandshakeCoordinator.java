@@ -29,6 +29,8 @@ public final class HandshakeCoordinator {
     private final byte[] ephPub;
 
     private Session session;
+    /** The peer ephemeral public key that built {@link #session}; {@code null} until the first handshake. */
+    private byte[] sessionPeerEphPub;
 
     public HandshakeCoordinator(byte[] idPriv, byte[] peerIdPub, Role myRole) {
         this.idPriv = idPriv.clone();
@@ -86,20 +88,25 @@ public final class HandshakeCoordinator {
     }
 
     private void acceptPeerEphemeral(byte[] peerEphPub) {
-        // The handshake is one-shot (SG-15): once the session exists, ignore any further
-        // TAG_HANDSHAKE frame instead of rebuilding. Rebuilding would mint a fresh Session
-        // with an empty anti-replay window (SG-02), so a malicious/compromised relay could
-        // re-inject the peer's original (cleartext) handshake frame to reset the replay
-        // guard and then replay previously delivered data frames. Dropping the duplicate
-        // keeps the established session and its replay state intact.
-        if (session != null) {
-            return;
-        }
         if (peerEphPub.length != Crypto.KEY_SIZE) {
             throw new IllegalArgumentException("peer ephemeral public key must be "
                     + Crypto.KEY_SIZE + " bytes");
         }
-        this.session = Session.create(idPriv, peerIdPub, ephPriv, peerEphPub.clone(), myRole);
+        // SG-15: an *identical* (replayed) peer handshake must be ignored, so a malicious/
+        // compromised relay cannot re-inject the peer's original cleartext handshake frame to
+        // mint a fresh Session with an empty anti-replay window (SG-02) and then replay
+        // previously delivered data frames. We keep the established session + its replay state.
+        if (session != null && Arrays.equals(peerEphPub, sessionPeerEphPub)) {
+            return;
+        }
+        // A *different* ephemeral means the peer genuinely reconnected and re-keyed with a fresh
+        // ephemeral (ConnectionManager.handleOpen builds a new HandshakeCoordinator on the peer's
+        // side). We must rebuild to match — otherwise this side keeps stale session keys and every
+        // subsequent data frame fails to AEAD-open and is silently dropped (the "green-but-hung
+        // after reconnect" bug). A new ephemeral derives new keys, so no captured frame from the
+        // old session decrypts under the new one — the SG-15 replay vector stays closed.
+        this.sessionPeerEphPub = peerEphPub.clone();
+        this.session = Session.create(idPriv, peerIdPub, ephPriv, sessionPeerEphPub, myRole);
     }
 
     private static byte[] tagged(byte tag, byte[] body) {

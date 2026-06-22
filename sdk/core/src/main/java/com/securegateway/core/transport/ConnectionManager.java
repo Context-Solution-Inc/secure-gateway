@@ -311,8 +311,12 @@ public final class ConnectionManager {
         if (Protocol.SYS_PEER_ONLINE.equals(kind)) {
             setState(ConnectionState.CONNECTED);
             // The handshake we sent on open was dropped if the peer wasn't connected yet.
-            // Resend unconditionally now that the peer is present; a duplicate handshake
-            // nonce re-derives the identical session on the peer (idempotent).
+            // Resend unconditionally now that the peer is present. Our ephemeral is unchanged
+            // since we last (re)connected, so if the peer already holds a session built from it
+            // the resend is an idempotent no-op (HandshakeCoordinator ignores an identical
+            // ephemeral). If the peer reconnected with a fresh ephemeral, ITS resend carries the
+            // new key and we re-key to match; this resend lets a peer that missed our handshake
+            // (re)build a session against our current ephemeral.
             if (handshake != null) {
                 sendFrame(Protocol.msg(UUID.randomUUID().toString(), now(), handshake.handshakeFrame()));
             }

@@ -92,6 +92,10 @@ final class GoBackend implements AutoCloseable {
                 // webhook secret (which the auth service rejects at boot).
                 Map.entry("AUTH_BILLING_DISABLED", "true"),
                 Map.entry("AUTH_ADMIN_KEY", ADMIN_KEY),
+                // The cross-platform e2e exercises functional pairing/connect across several tests
+                // on one seeded account; per-account rate limiting (default burst 10) is covered by
+                // the Go service's own tests, so disable it here to keep these runs deterministic.
+                Map.entry("AUTH_RATELIMIT_ENABLED", "false"),
                 Map.entry("AUTH_DEV_SEED", ACCOUNT_ID + "," + LICENSE_ID + "," + SUBSCRIPTION_ID),
                 Map.entry("AUTH_RELAY_URL", wsUrl()),
                 Map.entry("AUTH_PUBLIC_URL", authUrl()),
