@@ -45,5 +45,9 @@ allprojects {
     // 0.2.2: SG-14/SG-19 — transports reject non-wss:// relay / non-https:// auth endpoints
     // (loopback/RFC1918 carve-out) and the iOS URL parse is failable, not force-unwrapped. No
     // wire/KDF change; interop-compatible with 0.2.x.
-    version = "0.2.2"
+    // 0.2.3: peer-reconnect re-key fix — the handshake stays one-shot for an *identical* (replayed)
+    // ephemeral (SG-15 holds) but rebuilds the session when the peer reconnects with a *new*
+    // ephemeral, instead of keeping stale keys and silently dropping every frame ("green-but-hung
+    // after reconnect"). No wire/KDF change; interop-compatible with 0.2.x.
+    version = "0.2.3"
 }

@@ -15,6 +15,8 @@ final class HandshakeCoordinator {
     private let ephPriv: Data
     private let ephPub: Data
     private var session: Session?
+    /// The peer ephemeral public key that built `session`; nil until the first handshake.
+    private var sessionPeerEphPub: Data?
 
     init(myPriv: Data, peerPub: Data, myRole: Role) {
         self.idPriv = myPriv
@@ -57,14 +59,18 @@ final class HandshakeCoordinator {
     }
 
     private func acceptPeerEphemeral(_ peerEphPub: Data) throws {
-        // The handshake is one-shot (SG-15): once the session exists, ignore any further
-        // TAG_HANDSHAKE frame instead of rebuilding. Rebuilding would mint a fresh Session
-        // with an empty anti-replay window (SG-02), letting a malicious/compromised relay
-        // re-inject the peer's original (cleartext) handshake frame to reset the replay guard
-        // and then replay previously delivered data frames. Dropping the duplicate keeps the
-        // established session and its replay state intact.
-        if session != nil { return }
         guard peerEphPub.count == Crypto.keySize else { throw CryptoError.badLength }
+        // SG-15: an *identical* (replayed) peer handshake must be ignored, so a malicious/
+        // compromised relay cannot re-inject the peer's original cleartext handshake frame to
+        // mint a fresh Session with an empty anti-replay window (SG-02) and then replay
+        // previously delivered data frames. We keep the established session + its replay state.
+        if session != nil, peerEphPub == sessionPeerEphPub { return }
+        // A *different* ephemeral means the peer genuinely reconnected and re-keyed with a fresh
+        // ephemeral. We must rebuild to match — otherwise this side keeps stale session keys and
+        // every subsequent data frame fails to open and is silently dropped (the "green-but-hung
+        // after reconnect" bug). A new ephemeral derives new keys, so no captured frame from the
+        // old session decrypts under the new one — the SG-15 replay vector stays closed.
+        sessionPeerEphPub = peerEphPub
         session = try Session.create(idPriv: idPriv, peerIdPub: peerIdPub,
                                      ephPriv: ephPriv, peerEphPub: peerEphPub, role: myRole)
     }
