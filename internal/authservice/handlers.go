@@ -169,34 +169,47 @@ func (s *Service) handleRegisterDevice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	ctx := r.Context()
-	// Idempotent re-registration: a repeat of the same account+role+public_key
-	// returns the existing device instead of inserting a new row, so a client
-	// retrying registration does not amplify rows (SG-10). Keyless devices are
-	// not yet uniquely identifiable, so they fall through to the capped insert.
-	if len(pub) > 0 {
-		if existing, err := s.store.FindDeviceByAccountRoleKey(ctx, accountID, role, pub); err == nil {
-			writeJSON(w, http.StatusOK, deviceResp{DeviceID: existing.ID})
-			return
-		} else if !errors.Is(err, authstore.ErrNotFound) {
-			writeErr(w, http.StatusInternalServerError, "store_error")
-			return
-		}
-	}
-	// Per-account device cap bounds datastore/cost-amplification abuse (SG-10).
-	if count, err := s.store.CountDevicesByAccount(ctx, accountID); err != nil {
-		writeErr(w, http.StatusInternalServerError, "store_error")
-		return
-	} else if count >= s.deviceCap {
+	dev, err := s.registerOrFindDevice(r.Context(), accountID, role, pub)
+	if errors.Is(err, errDeviceLimit) {
 		writeErr(w, http.StatusConflict, "device_limit")
 		return
-	}
-	dev := authstore.Device{ID: authstore.NewID("dev"), AccountID: accountID, Role: role, PublicKey: pub, CreatedAt: s.now()}
-	if err := s.store.UpsertDevice(ctx, dev); err != nil {
+	} else if err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error")
 		return
 	}
 	writeJSON(w, http.StatusOK, deviceResp{DeviceID: dev.ID})
+}
+
+// errDeviceLimit signals the per-account device cap is reached (SG-10), so
+// callers can map it to a 409 while other errors map to 500.
+var errDeviceLimit = errors.New("device limit")
+
+// registerOrFindDevice registers a device for the account+role+public_key, or
+// returns the existing one idempotently (SG-10): a repeat of the same triple
+// reuses the row rather than amplifying inserts. Keyless devices aren't uniquely
+// identifiable, so they fall through to the capped insert. Used both by the
+// account-secret registration endpoint and by completePairing, which registers
+// the mobile device authorized by the pairing token (security L2 — so the phone
+// never needs the account secret to register).
+func (s *Service) registerOrFindDevice(ctx context.Context, accountID string, role token.Role, pub []byte) (authstore.Device, error) {
+	if len(pub) > 0 {
+		if existing, err := s.store.FindDeviceByAccountRoleKey(ctx, accountID, role, pub); err == nil {
+			return existing, nil
+		} else if !errors.Is(err, authstore.ErrNotFound) {
+			return authstore.Device{}, err
+		}
+	}
+	// Per-account device cap bounds datastore/cost-amplification abuse (SG-10).
+	if count, err := s.store.CountDevicesByAccount(ctx, accountID); err != nil {
+		return authstore.Device{}, err
+	} else if count >= s.deviceCap {
+		return authstore.Device{}, errDeviceLimit
+	}
+	dev := authstore.Device{ID: authstore.NewID("dev"), AccountID: accountID, Role: role, PublicKey: pub, CreatedAt: s.now()}
+	if err := s.store.UpsertDevice(ctx, dev); err != nil {
+		return authstore.Device{}, err
+	}
+	return dev, nil
 }
 
 // --- Connection tokens ---

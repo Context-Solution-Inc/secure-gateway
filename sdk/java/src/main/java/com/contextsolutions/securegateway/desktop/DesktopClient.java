@@ -70,10 +70,9 @@ public final class DesktopClient {
         AuthClient.PairingTokenResult r =
                 auth.createPairingToken(config.accountSecret, config.licenseId, deviceId, publicKeyB64);
         this.pairingToken = r.pairingToken;
-        // Embed the account secret client-side so the scanned QR conveys the
-        // credential the mobile needs to issue tokens (it has no subscription of
-        // its own). Not minted by the gateway — it never leaves the QR path.
-        r.qr.accountSecret = config.accountSecret;
+        // Security L2: the account secret is NO LONGER embedded in the QR. The gateway now mints a
+        // per-pair credential at pairing completion, which the phone uses instead — so the shared
+        // account secret stays on the desktop and a photographed QR no longer leaks it.
         config.logger.accept("qr: ready (pairing token minted); waiting for the phone to scan + pair");
         return r.qr;
     }

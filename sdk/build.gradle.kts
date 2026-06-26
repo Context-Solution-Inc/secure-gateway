@@ -79,12 +79,18 @@ allprojects {
     // ephemeral (SG-15 holds) but rebuilds the session when the peer reconnects with a *new*
     // ephemeral, instead of keeping stale keys and silently dropping every frame ("green-but-hung
     // after reconnect"). No wire/KDF change; interop-compatible with 0.2.x.
+    // 0.2.4: security L2 — per-pair credential. The gateway mints a pairing-scoped credential at
+    // completion (and registers the mobile device via the pairing token), so the desktop's account
+    // secret no longer rides the QR: DesktopClient stops injecting QrPayload.accountSecret, and
+    // MobileClient issues/refreshes/unpairs with the per-pair credential (CompletePairingResult
+    // .pairCredential/.mobileDeviceId; MobileConfig.pairCredential for reconnect). Account-secret
+    // fallback retained for a legacy gateway. No wire/KDF change; interop-compatible with 0.2.x.
     //
     // NOTE: this version is the coordinate consumers resolve. When local-agent adopts the
     // GitHub Packages publish path (M4 Step 2), bump in lockstep with the consumer's
     // libs.versions.toml + verification-metadata regen so a stale mavenLocal jar can't shadow
-    // the signed remote. Kept at 0.2.3 here so the existing mavenLocal flow is unbroken.
-    version = "0.2.3"
+    // the signed remote.
+    version = "0.2.4"
 }
 
 /** Minimal POM metadata for the published SDK coordinates (GitHub Packages / consumer hygiene). */

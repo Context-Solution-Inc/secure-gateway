@@ -17,13 +17,22 @@ class MobileConfig {
     lateinit var authUrl: String
 
     /**
-     * The account credential. May be left null and supplied by the scanned relay
-     * QR ([MobileClient.pair] reads [com.contextsolutions.securegateway.core.auth.QrPayload.accountSecret]),
-     * since the phone has no subscription of its own.
+     * Legacy account credential (pre-L2). The phone now authenticates with the per-pair
+     * [pairCredential] minted at pairing instead; this is kept only as a fallback against a legacy
+     * gateway that returns no pair credential (and an old QR that still carries
+     * [com.contextsolutions.securegateway.core.auth.QrPayload.accountSecret]). New pairings leave it null.
      */
     var accountSecret: String? = null
     var relayUrl: String? = null
     var deviceId: String? = null
+
+    /**
+     * The per-pair credential minted by the gateway at pairing completion (security L2). The phone
+     * authenticates token issue/refresh + unpair with this — not the account secret, which no longer
+     * rides the QR. Learned at [MobileClient.pair]; persist it with [deviceId]/[pairId]/
+     * [desktopPublicKeyB64] and feed it back here to reconnect after a toggle/relaunch.
+     */
+    var pairCredential: String? = null
 
     /**
      * Restore a prior pairing so [MobileClient.connect] can run WITHOUT re-[MobileClient.pair]ing.
