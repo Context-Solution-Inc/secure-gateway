@@ -25,6 +25,7 @@ func Run(t *testing.T, newStore func(t *testing.T) authstore.Store) {
 	t.Run("PairingCapacity", func(t *testing.T) { testPairingCapacity(t, newStore(t)) })
 	t.Run("RefreshTokens", func(t *testing.T) { testRefreshTokens(t, newStore(t)) })
 	t.Run("PairingTokens", func(t *testing.T) { testPairingTokens(t, newStore(t)) })
+	t.Run("PairCredentials", func(t *testing.T) { testPairCredentials(t, newStore(t)) })
 	t.Run("CheckoutClaims", func(t *testing.T) { testCheckoutClaims(t, newStore(t)) })
 	t.Run("WebhookEvents", func(t *testing.T) { testWebhookEvents(t, newStore(t)) })
 }
@@ -370,6 +371,50 @@ func testPairingTokens(t *testing.T, s authstore.Store) {
 	got, _ = s.GetPairingToken(ctx, "pt_hash_2")
 	if got.Active(now) {
 		t.Fatalf("expired token reports active: %+v", got)
+	}
+}
+
+func testPairCredentials(t *testing.T, s authstore.Store) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Millisecond)
+	if _, err := s.GetPairCredential(ctx, "missing"); !errors.Is(err, authstore.ErrNotFound) {
+		t.Fatalf("GetPairCredential missing: want ErrNotFound, got %v", err)
+	}
+	c := authstore.PairCredential{
+		PairID: "pair_1", AccountID: "acct_1", LicenseID: "lic_1",
+		MobileDeviceID: "dev_m1", SecretHash: "h1", CreatedAt: now,
+	}
+	if err := s.PutPairCredential(ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetPairCredential(ctx, "pair_1")
+	if err != nil || got.SecretHash != "h1" || got.MobileDeviceID != "dev_m1" || !got.Active(now) {
+		t.Fatalf("GetPairCredential: %+v err=%v active=%v", got, err, got.Active(now))
+	}
+	// Re-pairing rotates in place: same pair_id, new device + secret, still active.
+	rot := c
+	rot.MobileDeviceID = "dev_m2"
+	rot.SecretHash = "h2"
+	if err := s.PutPairCredential(ctx, rot); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetPairCredential(ctx, "pair_1")
+	if got.SecretHash != "h2" || got.MobileDeviceID != "dev_m2" || !got.Active(now) {
+		t.Fatalf("after rotate: %+v active=%v", got, got.Active(now))
+	}
+	// Revoke flips Active to false; revoking again / a missing pair is idempotent.
+	if err := s.RevokePairCredential(ctx, "pair_1", now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.GetPairCredential(ctx, "pair_1")
+	if got.Active(now) {
+		t.Fatalf("revoked credential reports active: %+v", got)
+	}
+	if err := s.RevokePairCredential(ctx, "pair_1", now); err != nil {
+		t.Fatalf("re-revoke should be idempotent, got %v", err)
+	}
+	if err := s.RevokePairCredential(ctx, "missing", now); err != nil {
+		t.Fatalf("revoke missing should be idempotent, got %v", err)
 	}
 }
 

@@ -27,10 +27,13 @@ class MobileClient internal constructor(private val config: MobileConfig) {
 
     private var deviceId: String? = config.deviceId
     // Seeded from config to support reconnect-without-repair (the QR's pairing token is
-    // single-use; a restored pairId + desktop public key let connect() run on its own).
+    // single-use; a restored pairId + desktop public key + pair credential let connect() run on its own).
     private var pairId: String? = config.pairId
     private var peerPublicKey: ByteArray? = config.desktopPublicKeyB64?.let { Base64.getDecoder().decode(it) }
     private var relayUrl: String? = config.relayUrl
+    // The per-pair credential the phone authenticates with (security L2), learned at pair() or
+    // restored from a prior pairing via config.
+    private var pairCredential: String? = config.pairCredential
 
     private var onMessage: Consumer<ByteArray> = Consumer { }
     private var onStateChange: Consumer<ConnectionState> = Consumer { }
@@ -46,21 +49,27 @@ class MobileClient internal constructor(private val config: MobileConfig) {
         return this
     }
 
-    /** Scan a QR payload: register this device, complete pairing, and exchange public keys. */
+    /** Scan a QR payload: complete pairing, register this device, and exchange public keys. */
     fun pair(qr: QrPayload) {
-        // The relay QR carries the desktop's account secret (the phone has no
-        // subscription of its own) — adopt it before any authed call.
-        qr.accountSecret?.takeIf { it.isNotBlank() }?.let { config.accountSecret = it }
         val log = config.logger
-        log("pair: auth=${config.authUrl} relay=${qr.relayEndpoint() ?: config.relayUrl} secret=${if (config.accountSecret.isNullOrBlank()) "MISSING" else "present"}")
+        // Security L2: the phone no longer adopts the desktop's account secret from the QR. It is
+        // kept only as a fallback if a legacy QR still carries one and the gateway returns no
+        // per-pair credential (pre-L2). New desktops omit it entirely.
+        qr.accountSecret?.takeIf { it.isNotBlank() }?.let { config.accountSecret = it }
+        log("pair: auth=${config.authUrl} relay=${qr.relayEndpoint() ?: config.relayUrl}")
         config.pushWaker.register("mobile-push-token") // host supplies the real FCM token
-        ensureDevice()
-        log("pair: device registered id=$deviceId; completing pairing token=${qr.pairingToken.take(8)}…")
+        log("pair: completing pairing token=${qr.pairingToken.take(8)}… (gateway registers the device)")
+        // Pass deviceId (null on a first pair): the gateway then registers the mobile device from
+        // its public key under the token's account and returns the id + the per-pair credential, so
+        // no account secret is needed to register (L2).
         val result = auth.completePairing(qr.pairingToken, deviceId, publicKeyB64)
         pairId = result.pairId
         peerPublicKey = Base64.getDecoder().decode(result.desktopPublicKey)
+        deviceId = result.mobileDeviceId ?: deviceId
+        pairCredential = result.pairCredential
         relayUrl = qr.relayEndpoint() ?: relayUrl
-        log("pair: ok pairId=$pairId peerPubKey=${peerPublicKey?.size}B relay=$relayUrl")
+        val credState = if (pairCredential.isNullOrBlank()) "MISSING(legacy gateway → account-secret fallback)" else "present"
+        log("pair: ok pairId=$pairId deviceId=$deviceId cred=$credState peerPubKey=${peerPublicKey?.size}B relay=$relayUrl")
     }
 
     /** Parse a scanned QR JSON string and pair. */
@@ -72,9 +81,9 @@ class MobileClient internal constructor(private val config: MobileConfig) {
         val pid = pairId ?: error("call pair(qr) first")
         val peer = peerPublicKey ?: error("missing desktop public key")
         val url = relayUrl ?: error("missing relay endpoint")
-        log("connect: issuing token (account secret) for pairId=$pid device=$deviceId")
+        log("connect: issuing token (pair credential) for pairId=$pid device=$deviceId")
         val tokens = TokenStore()
-        tokens.update(auth.issueToken(accountSecret(), deviceId, pid))
+        tokens.update(auth.issueToken(credential(), deviceId, pid))
         log("connect: token issued; opening relay session at $url (the wss dial runs async — watch for state/onFailure below)")
         val cred = Credentials(url, Role.MOBILE, identity.privateKey(), peer, tokens, auth)
         client = RelayClient(cred) { OkHttpWebSocketTransport(logger = log) }
@@ -91,6 +100,13 @@ class MobileClient internal constructor(private val config: MobileConfig) {
     fun pairId(): String? = pairId
 
     fun deviceId(): String? = deviceId
+
+    /**
+     * The per-pair credential learned at [pair] (security L2; null before pairing or against a
+     * legacy gateway). Persist it with [deviceId]/[pairId]/[desktopPublicKeyB64] and feed it back via
+     * [MobileConfig.pairCredential] to reconnect after a toggle/relaunch.
+     */
+    fun pairCredential(): String? = pairCredential
 
     /** Base64-std of the desktop's X25519 public key learned at [pair] (null before pairing). */
     fun desktopPublicKeyB64(): String? = peerPublicKey?.let { Base64.getEncoder().encodeToString(it) }
@@ -112,21 +128,23 @@ class MobileClient internal constructor(private val config: MobileConfig) {
     fun unpair() {
         val pid = pairId ?: return
         config.logger("unpair: revoking pairId=$pid")
-        auth.unpair(accountSecret(), pid)
+        auth.unpair(credential(), pid)
         pairId = null
         peerPublicKey = null
+        pairCredential = null
     }
 
     fun close() {
         client?.close()
     }
 
-    private fun ensureDevice() {
-        if (deviceId == null) {
-            deviceId = auth.registerDevice(accountSecret(), Role.MOBILE, publicKeyB64)
-        }
-    }
-
-    private fun accountSecret(): String =
-        config.accountSecret ?: error("no account secret (scan a relay QR, or set MobileConfig.accountSecret)")
+    /**
+     * The credential the phone authenticates token issue/refresh + unpair with: the per-pair
+     * credential (security L2), falling back to a legacy account secret only when no pair credential
+     * exists (a pre-L2 gateway returned none and an old QR carried the account secret).
+     */
+    private fun credential(): String =
+        pairCredential
+            ?: config.accountSecret
+            ?: error("no credential — call pair(qr) first, or set MobileConfig.pairCredential/accountSecret")
 }

@@ -65,12 +65,21 @@ public final class AuthClient {
         return send("/v1/pairing-tokens", accountSecret, body, PairingTokenResult.class);
     }
 
-    /** Mobile: complete pairing with its X25519 public key (the pairing token authorizes). */
+    /**
+     * Mobile: complete pairing with its X25519 public key (the pairing token authorizes).
+     *
+     * <p>Security L2: {@code mobileDeviceId} may be null — the gateway then registers the mobile
+     * device from its public key under the token's account and returns the id, so the phone needs
+     * no account secret to register. The result carries a per-pair credential the phone uses for
+     * token issue/refresh and unpair (instead of the account secret, which no longer rides the QR).
+     */
     public CompletePairingResult completePairing(String pairingToken, String mobileDeviceId,
                                                  String mobilePublicKeyB64) {
         ObjectMapperBody body = body("pairing_token", pairingToken)
-                .put("mobile_device_id", mobileDeviceId)
                 .put("mobile_public_key", mobilePublicKeyB64);
+        if (mobileDeviceId != null && !mobileDeviceId.isBlank()) {
+            body.put("mobile_device_id", mobileDeviceId);
+        }
         return send("/v1/pairings", null, body, CompletePairingResult.class);
     }
 
@@ -212,6 +221,12 @@ public final class AuthClient {
         public String pairId;
         @JsonProperty("desktop_public_key")
         public String desktopPublicKey;
+        /** The registered/resolved mobile device id (security L2; null against a legacy gateway). */
+        @JsonProperty("mobile_device_id")
+        public String mobileDeviceId;
+        /** The per-pair credential the phone authenticates with (security L2; null against a legacy gateway). */
+        @JsonProperty("pair_credential")
+        public String pairCredential;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

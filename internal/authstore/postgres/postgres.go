@@ -459,6 +459,39 @@ func (s *Store) RevokeRefreshTokensByDevice(ctx context.Context, deviceID string
 	return mapErr(err)
 }
 
+// --- Pair credentials (security L2) ---
+
+func (s *Store) PutPairCredential(ctx context.Context, c authstore.PairCredential) error {
+	// Upsert by pair_id: re-pairing rotates the secret + mobile device in place and
+	// clears any prior revocation (a fresh credential is active).
+	const q = `INSERT INTO pair_credentials (pair_id, account_id, license_id, mobile_device_id, secret_hash, created_at, revoked_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)
+		ON CONFLICT (pair_id) DO UPDATE SET account_id=EXCLUDED.account_id, license_id=EXCLUDED.license_id,
+			mobile_device_id=EXCLUDED.mobile_device_id, secret_hash=EXCLUDED.secret_hash,
+			created_at=EXCLUDED.created_at, revoked_at=EXCLUDED.revoked_at`
+	_, err := s.pool.Exec(ctx, q, c.PairID, c.AccountID, c.LicenseID, c.MobileDeviceID, c.SecretHash, c.CreatedAt, nilIfZero(c.RevokedAt))
+	return mapErr(err)
+}
+
+func (s *Store) GetPairCredential(ctx context.Context, pairID string) (authstore.PairCredential, error) {
+	const q = `SELECT pair_id, account_id, license_id, mobile_device_id, secret_hash, created_at, revoked_at FROM pair_credentials WHERE pair_id=$1`
+	var c authstore.PairCredential
+	var revoked *time.Time
+	if err := s.pool.QueryRow(ctx, q, pairID).Scan(&c.PairID, &c.AccountID, &c.LicenseID, &c.MobileDeviceID, &c.SecretHash, &c.CreatedAt, &revoked); err != nil {
+		return authstore.PairCredential{}, mapErr(err)
+	}
+	c.RevokedAt = deref(revoked)
+	return c, nil
+}
+
+func (s *Store) RevokePairCredential(ctx context.Context, pairID string, revokedAt time.Time) error {
+	// Idempotent: revoking a missing or already-revoked credential is not an error.
+	_, err := s.pool.Exec(ctx,
+		`UPDATE pair_credentials SET revoked_at=$2 WHERE pair_id=$1 AND revoked_at IS NULL`,
+		pairID, revokedAt)
+	return mapErr(err)
+}
+
 // --- Pairing tokens ---
 
 func (s *Store) CreatePairingToken(ctx context.Context, t authstore.PairingToken) error {

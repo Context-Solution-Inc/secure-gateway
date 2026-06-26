@@ -130,19 +130,28 @@ func (s *Service) handleCreatePairingToken(w http.ResponseWriter, r *http.Reques
 // --- POST /v1/pairings : mobile completes pairing with the token (FR-2.2) ---
 
 type completePairingReq struct {
-	PairingToken    string `json:"pairing_token"`
-	MobileDeviceID  string `json:"mobile_device_id"`
+	PairingToken string `json:"pairing_token"`
+	// MobileDeviceID is optional (security L2): when empty, the gateway registers
+	// the mobile device from MobilePublicKey under the token's account, authorized
+	// by the pairing token, so the phone never needs the account secret. The legacy
+	// flow (phone pre-registers with the account secret, then passes its id) still
+	// works for back-compat with older SDKs.
+	MobileDeviceID  string `json:"mobile_device_id,omitempty"`
 	MobilePublicKey string `json:"mobile_public_key"` // base64
 }
 type completePairingResp struct {
 	PairID           string `json:"pair_id"`
-	DesktopPublicKey string `json:"desktop_public_key"` // base64
+	DesktopPublicKey string `json:"desktop_public_key"`         // base64
+	MobileDeviceID   string `json:"mobile_device_id,omitempty"` // the registered/resolved mobile device id (L2)
+	PairCredential   string `json:"pair_credential,omitempty"`  // per-pair credential (L2); the phone authenticates with this, not the account secret
 }
 
 func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var req completePairingReq
-	if err := decodeJSON(r, &req); err != nil || req.PairingToken == "" || req.MobileDeviceID == "" || req.MobilePublicKey == "" {
+	// MobileDeviceID is optional (L2: the gateway registers the device when it is
+	// absent); the public key is always required.
+	if err := decodeJSON(r, &req); err != nil || req.PairingToken == "" || req.MobilePublicKey == "" {
 		writeErr(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -164,16 +173,32 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusForbidden, "license_invalid")
 		return
 	}
-	// The mobile device must belong to the token's account with the mobile role.
-	mobile, ok := s.deviceForRole(ctx, req.MobileDeviceID, pt.AccountID, token.RoleMobile)
-	if !ok {
-		writeErr(w, http.StatusBadRequest, "bad_devices")
-		return
-	}
 	mobilePub, err := base64.StdEncoding.DecodeString(req.MobilePublicKey)
 	if err != nil || len(mobilePub) == 0 {
 		writeErr(w, http.StatusBadRequest, "bad_public_key")
 		return
+	}
+	// Resolve the mobile device. L2: when the phone sends no device id, register it
+	// here from its public key under the token's account (authorized by the pairing
+	// token), so the phone never needs the account secret. The legacy path (phone
+	// pre-registered with the account secret and passes its id) still validates the
+	// device belongs to the token's account with the mobile role.
+	var mobile authstore.Device
+	if req.MobileDeviceID != "" {
+		var ok bool
+		if mobile, ok = s.deviceForRole(ctx, req.MobileDeviceID, pt.AccountID, token.RoleMobile); !ok {
+			writeErr(w, http.StatusBadRequest, "bad_devices")
+			return
+		}
+	} else {
+		mobile, err = s.registerOrFindDevice(ctx, pt.AccountID, token.RoleMobile, mobilePub)
+		if errors.Is(err, errDeviceLimit) {
+			writeErr(w, http.StatusConflict, "device_limit")
+			return
+		} else if err != nil {
+			writeErr(w, http.StatusInternalServerError, "store_error")
+			return
+		}
 	}
 	desktop, err := s.store.GetDevice(ctx, pt.DesktopDeviceID)
 	if err != nil || len(desktop.PublicKey) == 0 {
@@ -264,9 +289,24 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Mint the per-pair credential the phone will authenticate with (security L2),
+	// so the desktop's account secret no longer needs to ride the QR. Upsert by
+	// pair_id, so a re-pair rotates the secret for the new mobile device in place
+	// and the evicted device's credential stops working.
+	credSecret := newPairCredential(pairID)
+	if err := s.store.PutPairCredential(ctx, authstore.PairCredential{
+		PairID: pairID, AccountID: pt.AccountID, LicenseID: lic.ID,
+		MobileDeviceID: mobile.ID, SecretHash: hashSecret(credSecret), CreatedAt: s.now(),
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, completePairingResp{
 		PairID:           pairID,
 		DesktopPublicKey: base64.StdEncoding.EncodeToString(desktop.PublicKey),
+		MobileDeviceID:   mobile.ID,
+		PairCredential:   credSecret,
 	})
 }
 
@@ -329,7 +369,9 @@ type unpairReq struct {
 
 func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	accountID, err := s.authenticateAccount(ctx, r)
+	// Either side may unpair: the desktop with its account secret, the phone with
+	// its per-pair credential (L2 — the phone no longer holds the account secret).
+	accountID, cred, err := s.authenticateAccountOrPair(ctx, r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -337,6 +379,11 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	var req unpairReq
 	if err := decodeJSON(r, &req); err != nil || req.PairID == "" {
 		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// A pair credential may only unpair its own pairing.
+	if cred != nil && cred.PairID != req.PairID {
+		writeErr(w, http.StatusNotFound, "pairing_not_found")
 		return
 	}
 	p, err := s.store.GetPairing(ctx, req.PairID)
@@ -347,6 +394,11 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetPairingStatus(ctx, p.PairID, authstore.PairingRevoked); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error")
 		return
+	}
+	// Revoke the per-pair credential so it cannot mint further tokens (L2, FR-2.5).
+	if err := s.store.RevokePairCredential(ctx, p.PairID, s.now()); err != nil {
+		s.log.Error("revoke pair credential failed",
+			"pair_id", p.PairID, logging.FieldReason, err.Error())
 	}
 	// Free the slot and cut live sessions (FR-2.5).
 	s.publishRevocation(ctx, backplane.RevocationEvent{PairID: p.PairID})

@@ -76,9 +76,11 @@ class CrossPlatformE2ETest {
                 });
 
         // --- Mobile (Kotlin SDK) ---
+        // Security L2: the phone gets NO account secret. It pairs (gateway registers its device via
+        // the pairing token), then issues tokens + unpairs with the per-pair credential minted at
+        // pairing completion — proving the account secret no longer needs to leave the desktop/QR.
         MobileConfig mcfg = new MobileConfig();
         mcfg.setAuthUrl(backend.authUrl());
-        mcfg.setAccountSecret(accountSecret);
         MobileClient mobile = com.contextsolutions.securegateway.mobile.SecureGateway.INSTANCE.mobile(mcfg);
         mobile.onMessage(b -> {
             mobileInbox.add(b);
@@ -155,9 +157,9 @@ class CrossPlatformE2ETest {
                     }
                 });
 
+        // L2: no account secret on the phone — it reconnects on the per-pair credential alone.
         MobileConfig mcfg = new MobileConfig();
         mcfg.setAuthUrl(backend.authUrl());
-        mcfg.setAccountSecret(accountSecret);
         MobileClient mobile = com.contextsolutions.securegateway.mobile.SecureGateway.INSTANCE.mobile(mcfg);
         mobile.onMessage(b -> null);
         mobile.onStateChange(s -> {

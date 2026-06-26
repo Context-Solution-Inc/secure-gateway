@@ -171,6 +171,26 @@ func (t PairingToken) Active(now time.Time) bool {
 	return t.ConsumedAt.IsZero() && now.Before(t.ExpiresAt)
 }
 
+// PairCredential is the per-pair credential the gateway mints at pairing
+// completion (security L2). The phone uses it — not the desktop's shared account
+// secret, which is no longer carried in the QR — to issue/refresh connection
+// tokens and to unpair. It is scoped to one pairing: keyed by PairID, with at
+// most one active credential per pair; re-pairing (FR-2.4) upserts a fresh secret
+// for the new mobile device so the evicted device's credential stops working.
+// SecretHash is the hex SHA-256 of the secret; the secret itself is never stored.
+type PairCredential struct {
+	PairID         string // primary key
+	AccountID      string
+	LicenseID      string
+	MobileDeviceID string
+	SecretHash     string
+	CreatedAt      time.Time
+	RevokedAt      time.Time
+}
+
+// Active reports whether the credential is currently usable at now.
+func (c PairCredential) Active(now time.Time) bool { return c.RevokedAt.IsZero() }
+
 // ClaimStatus tracks the lifecycle of a desktop checkout-claim (one-time
 // onboarding so a freshly-paid desktop can learn its account credential).
 type ClaimStatus string
@@ -284,6 +304,14 @@ type Store interface {
 	// device, used to evict a device's tokens on re-pairing (FR-2.4). It is
 	// idempotent: revoking zero matching tokens is not an error.
 	RevokeRefreshTokensByDevice(ctx context.Context, deviceID string, revokedAt time.Time) error
+
+	// Pair credentials (per-pair credential the phone uses instead of the account
+	// secret, security L2). PutPairCredential upserts by pair_id, so re-pairing
+	// rotates the secret in place. GetPairCredential returns ErrNotFound when none
+	// exists. RevokePairCredential sets revoked_at and is idempotent.
+	PutPairCredential(ctx context.Context, c PairCredential) error
+	GetPairCredential(ctx context.Context, pairID string) (PairCredential, error)
+	RevokePairCredential(ctx context.Context, pairID string, revokedAt time.Time) error
 
 	// Pairing tokens (one-time QR credential, FR-2.1).
 	CreatePairingToken(ctx context.Context, t PairingToken) error
