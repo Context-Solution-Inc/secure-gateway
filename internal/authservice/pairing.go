@@ -136,7 +136,8 @@ type completePairingReq struct {
 }
 type completePairingResp struct {
 	PairID           string `json:"pair_id"`
-	DesktopPublicKey string `json:"desktop_public_key"` // base64
+	DesktopPublicKey string `json:"desktop_public_key"`        // base64
+	PairCredential   string `json:"pair_credential,omitempty"` // per-pair credential (L2); the phone authenticates with this, not the account secret
 }
 
 func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) {
@@ -264,9 +265,23 @@ func (s *Service) handleCompletePairing(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// Mint the per-pair credential the phone will authenticate with (security L2),
+	// so the desktop's account secret no longer needs to ride the QR. Upsert by
+	// pair_id, so a re-pair rotates the secret for the new mobile device in place
+	// and the evicted device's credential stops working.
+	credSecret := newPairCredential(pairID)
+	if err := s.store.PutPairCredential(ctx, authstore.PairCredential{
+		PairID: pairID, AccountID: pt.AccountID, LicenseID: lic.ID,
+		MobileDeviceID: mobile.ID, SecretHash: hashSecret(credSecret), CreatedAt: s.now(),
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, completePairingResp{
 		PairID:           pairID,
 		DesktopPublicKey: base64.StdEncoding.EncodeToString(desktop.PublicKey),
+		PairCredential:   credSecret,
 	})
 }
 
@@ -329,7 +344,9 @@ type unpairReq struct {
 
 func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	accountID, err := s.authenticateAccount(ctx, r)
+	// Either side may unpair: the desktop with its account secret, the phone with
+	// its per-pair credential (L2 — the phone no longer holds the account secret).
+	accountID, cred, err := s.authenticateAccountOrPair(ctx, r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -337,6 +354,11 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	var req unpairReq
 	if err := decodeJSON(r, &req); err != nil || req.PairID == "" {
 		writeErr(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// A pair credential may only unpair its own pairing.
+	if cred != nil && cred.PairID != req.PairID {
+		writeErr(w, http.StatusNotFound, "pairing_not_found")
 		return
 	}
 	p, err := s.store.GetPairing(ctx, req.PairID)
@@ -347,6 +369,11 @@ func (s *Service) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.SetPairingStatus(ctx, p.PairID, authstore.PairingRevoked); err != nil {
 		writeErr(w, http.StatusInternalServerError, "store_error")
 		return
+	}
+	// Revoke the per-pair credential so it cannot mint further tokens (L2, FR-2.5).
+	if err := s.store.RevokePairCredential(ctx, p.PairID, s.now()); err != nil {
+		s.log.Error("revoke pair credential failed",
+			"pair_id", p.PairID, logging.FieldReason, err.Error())
 	}
 	// Free the slot and cut live sessions (FR-2.5).
 	s.publishRevocation(ctx, backplane.RevocationEvent{PairID: p.PairID})

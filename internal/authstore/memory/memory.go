@@ -18,31 +18,33 @@ import (
 type Store struct {
 	mu sync.RWMutex
 
-	accounts       map[string]authstore.Account
-	customerToAcct map[string]string // stripe customer id -> account id
-	subscriptions  map[string]authstore.Subscription
-	licenses       map[string]authstore.License
-	devices        map[string]authstore.Device
-	pairings       map[string]authstore.Pairing
-	refreshTokens  map[string]authstore.RefreshToken
-	pairingTokens  map[string]authstore.PairingToken
-	checkoutClaims map[string]authstore.CheckoutClaim // keyed by nonce
-	webhookEvents  map[string]authstore.WebhookEvent
+	accounts        map[string]authstore.Account
+	customerToAcct  map[string]string // stripe customer id -> account id
+	subscriptions   map[string]authstore.Subscription
+	licenses        map[string]authstore.License
+	devices         map[string]authstore.Device
+	pairings        map[string]authstore.Pairing
+	refreshTokens   map[string]authstore.RefreshToken
+	pairingTokens   map[string]authstore.PairingToken
+	pairCredentials map[string]authstore.PairCredential // keyed by pair_id (L2)
+	checkoutClaims  map[string]authstore.CheckoutClaim  // keyed by nonce
+	webhookEvents   map[string]authstore.WebhookEvent
 }
 
 // New returns an empty in-memory store.
 func New() *Store {
 	return &Store{
-		accounts:       map[string]authstore.Account{},
-		customerToAcct: map[string]string{},
-		subscriptions:  map[string]authstore.Subscription{},
-		licenses:       map[string]authstore.License{},
-		devices:        map[string]authstore.Device{},
-		pairings:       map[string]authstore.Pairing{},
-		refreshTokens:  map[string]authstore.RefreshToken{},
-		pairingTokens:  map[string]authstore.PairingToken{},
-		checkoutClaims: map[string]authstore.CheckoutClaim{},
-		webhookEvents:  map[string]authstore.WebhookEvent{},
+		accounts:        map[string]authstore.Account{},
+		customerToAcct:  map[string]string{},
+		subscriptions:   map[string]authstore.Subscription{},
+		licenses:        map[string]authstore.License{},
+		devices:         map[string]authstore.Device{},
+		pairings:        map[string]authstore.Pairing{},
+		refreshTokens:   map[string]authstore.RefreshToken{},
+		pairingTokens:   map[string]authstore.PairingToken{},
+		pairCredentials: map[string]authstore.PairCredential{},
+		checkoutClaims:  map[string]authstore.CheckoutClaim{},
+		webhookEvents:   map[string]authstore.WebhookEvent{},
 	}
 }
 
@@ -450,6 +452,35 @@ func (s *Store) ConsumePairingToken(_ context.Context, id, resultPairID string, 
 	t.ResultPairID = resultPairID
 	s.pairingTokens[id] = t
 	return nil
+}
+
+// --- Pair credentials (security L2) ---
+
+func (s *Store) PutPairCredential(_ context.Context, c authstore.PairCredential) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pairCredentials[c.PairID] = c // upsert by pair_id; re-pairing rotates in place
+	return nil
+}
+
+func (s *Store) GetPairCredential(_ context.Context, pairID string) (authstore.PairCredential, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.pairCredentials[pairID]
+	if !ok {
+		return authstore.PairCredential{}, authstore.ErrNotFound
+	}
+	return c, nil
+}
+
+func (s *Store) RevokePairCredential(_ context.Context, pairID string, revokedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c, ok := s.pairCredentials[pairID]; ok && c.RevokedAt.IsZero() {
+		c.RevokedAt = revokedAt
+		s.pairCredentials[pairID] = c
+	}
+	return nil // idempotent: missing or already-revoked is not an error
 }
 
 // --- Checkout claims ---

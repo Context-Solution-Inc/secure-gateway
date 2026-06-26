@@ -213,7 +213,8 @@ type tokenResp struct {
 
 func (s *Service) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	accountID, err := s.authenticateAccount(ctx, r)
+	// Accept the desktop's account secret OR a phone's per-pair credential (L2).
+	accountID, cred, err := s.authenticateAccountOrPair(ctx, r)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, "unauthorized")
 		return
@@ -221,6 +222,12 @@ func (s *Service) handleIssueToken(w http.ResponseWriter, r *http.Request) {
 	var req tokenReq
 	if err := decodeJSON(r, &req); err != nil || req.DeviceID == "" || req.PairID == "" {
 		s.rejectToken(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	// A pair credential is scoped to exactly its pairing + mobile device: it may
+	// only mint tokens for that pair/device, never another pair or the desktop side.
+	if cred != nil && (cred.PairID != req.PairID || cred.MobileDeviceID != req.DeviceID) {
+		s.rejectToken(w, http.StatusForbidden, "pairing_invalid")
 		return
 	}
 	pairing, err := s.store.GetPairing(ctx, req.PairID)
