@@ -8,11 +8,12 @@
 #   make push VERSION=1.4.2                    # builds + pushes ghcr.io/lley154/secure-gateway/{relay,auth}:1.4.2
 #   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
 #
-#   # --- on the VPS: ONLY 4 files needed, in one directory ---
+#   # --- on the VPS: files needed, in one directory ---
 #   #   docker-compose.prod-image.yml   (this file)
 #   #   Caddyfile                       (reverse-proxy / TLS config)
 #   #   .env                            (secrets + IMAGE_REGISTRY/IMAGE_TAG; you create it)
 #   #   keys/relay.key.json             (JWT signing key)
+#   #   models/                         (AI model files to serve; provisioned on the host)
 #   # No repo source/Dockerfiles/Makefile on the VPS; pgdata & caddy_* are
 #   # Docker-managed named volumes, not host files. The relative mounts below
 #   # resolve against THIS directory, so always run compose from here.
@@ -45,6 +46,7 @@ services:
     depends_on:
       - relay
       - auth
+      - models
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt:
@@ -179,6 +181,37 @@ services:
       net.ipv4.tcp_max_syn_backlog: "65535"
       net.ipv4.ip_local_port_range: "1024 65535"
       net.ipv4.tcp_tw_reuse: "1"
+
+  models:
+    # Serves AI model files for download (static content). A single statically
+    # linked Rust binary on a scratch base — no shell, libc, or package manager,
+    # so the attack surface is essentially just the binary. Internal network
+    # only; the Caddy edge terminates TLS and reverse-proxies to it (SG-11).
+    #
+    # Pin the immutable version tag AND digest — never :latest in prod. The image
+    # defaults to USER root and EXPOSE 80, so we MUST override: run as the same
+    # uid 65532 the Go services use (cap_drop:[ALL] then forbids binding <1024,
+    # hence --port=8080). Refresh the digest when bumping the version:
+    #   docker buildx imagetools inspect ghcr.io/static-web-server/static-web-server:2.43.0
+    image: ghcr.io/static-web-server/static-web-server:2.43.0@sha256:6acea6260b14e08dda986361e42640082fbfaab8d88c327de532bb13a3b22994
+    restart: unless-stopped
+    command:
+      - --root=/models
+      - --port=8080
+      - --compression=false          # model blobs (gguf/safetensors) are already compressed
+      - --directory-listing=false     # download by exact URL only; no index/enumeration
+      - --cache-control-headers=true  # let clients/CDNs cache immutable artifacts
+      - --log-level=info
+    user: "65532:65532"
+    volumes:
+      # Operator provisions ./models out-of-band (rsync/scp). Unlike ./keys these
+      # are NOT secret, so they only need to be world-readable (0644) by uid 65532:
+      #   mkdir -p models && rsync model.gguf vps:~/secure-gateway/models/
+      - ./models:/models:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   pgdata:

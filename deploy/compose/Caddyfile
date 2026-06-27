@@ -22,3 +22,12 @@
 	respond @metrics 404
 	reverse_proxy auth:8080
 }
+
+# Public AI model downloads -> internal static server (static-web-server). Caddy
+# terminates TLS and streams the response; the upstream serves plain HTTP with
+# byte-range support so large downloads resume. NOTE: this serves anything under
+# /models to anyone with the URL — gate it (forward_auth / signed URLs) before
+# publishing private models.
+{$MODELS_HOST} {
+	reverse_proxy models:8080
+}

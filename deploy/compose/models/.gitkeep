@@ -1,0 +1,5 @@
+# Bind-mount root for the `models` service (docker-compose.prod*.yml).
+# Provision model files here on the VPS out-of-band, e.g.:
+#   rsync model.gguf vps:~/secure-gateway/models/
+# Files must be world-readable (0644) — the container reads them as uid 65532.
+# The blobs themselves are gitignored; this placeholder keeps the dir tracked.
