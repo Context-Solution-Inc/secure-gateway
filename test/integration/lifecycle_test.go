@@ -8,8 +8,8 @@ import (
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/lley154/secure-gateway/internal/relay/session"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // TestTokenExpiryCloses verifies a session whose token expires without refresh

@@ -1,4 +1,4 @@
-module github.com/lley154/secure-gateway
+module github.com/context-solutions-inc/secure-gateway
 
 go 1.26
 

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/lley154/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
 )
 
 // Reconcile re-reads every subscription from the Stripe API and heals the local

@@ -7,9 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/authstore/postgres"
-	"github.com/lley154/secure-gateway/internal/authstore/storetest"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore/postgres"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore/storetest"
 )
 
 // TestPostgresStoreConformance runs the shared store conformance suite against a

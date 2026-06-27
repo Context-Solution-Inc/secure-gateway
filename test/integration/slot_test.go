@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // TestSlotEvictionSupersedes verifies that a second connection for the same

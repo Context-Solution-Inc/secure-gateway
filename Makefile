@@ -1,7 +1,7 @@
 # Secure Device Relay — M1 (relay) + M2 (auth & license) build tooling.
 
 BINARY      := relay
-PKG         := github.com/lley154/secure-gateway
+PKG         := github.com/context-solutions-inc/secure-gateway
 VERSION     ?= dev
 COMMIT      ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -11,9 +11,9 @@ LDFLAGS     := -s -w \
   -X $(PKG)/internal/version.BuildDate=$(BUILD_DATE)
 
 # Registry for `make push` (image-based prod deploy). Override per release, e.g.:
-#   make push IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway VERSION=1.0.0
+#   make push IMAGE_REGISTRY=ghcr.io/context-solutions-inc/secure-gateway VERSION=1.0.0
 # VERSION is the image tag; it maps to IMAGE_TAG in deploy/compose/.env.
-IMAGE_REGISTRY ?= ghcr.io/lley154/secure-gateway
+IMAGE_REGISTRY ?= ghcr.io/context-solutions-inc/secure-gateway
 
 # Full soak overrides, e.g.: make soak SOAK_CONNS=10000 SOAK_DURATION=24h
 SOAK_CONNS    ?= 1000

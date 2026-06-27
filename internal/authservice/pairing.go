@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // pairingQRVersion versions the QR payload schema (FR-2.1, §8.4). A future

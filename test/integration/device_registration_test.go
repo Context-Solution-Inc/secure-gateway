@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/lley154/secure-gateway/internal/e2ee"
+	"github.com/context-solutions-inc/secure-gateway/internal/e2ee"
 )
 
 // TestDeviceRegistrationCap is the SG-10 regression (cap half): POST /v1/devices

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
 )
 
 // Behavior is the license posture derived from a subscription (PRD §6.3).

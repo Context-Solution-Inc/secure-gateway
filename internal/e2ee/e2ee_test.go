@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // sessionPair builds the mobile and desktop sessions for one connection from a

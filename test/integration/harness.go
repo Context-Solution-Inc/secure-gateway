@@ -12,17 +12,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/backplane/memory"
-	"github.com/lley154/secure-gateway/internal/config"
-	"github.com/lley154/secure-gateway/internal/devtoken"
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/metrics"
-	"github.com/lley154/secure-gateway/internal/relay/hub"
-	"github.com/lley154/secure-gateway/internal/relay/server"
-	"github.com/lley154/secure-gateway/internal/relay/session"
-	"github.com/lley154/secure-gateway/internal/token"
-	"github.com/lley154/secure-gateway/test/testclient"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane/memory"
+	"github.com/context-solutions-inc/secure-gateway/internal/config"
+	"github.com/context-solutions-inc/secure-gateway/internal/devtoken"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/metrics"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/hub"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/server"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/test/testclient"
 )
 
 const (

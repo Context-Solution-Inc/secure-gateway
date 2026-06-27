@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/e2ee"
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/token"
-	"github.com/lley154/secure-gateway/test/testclient"
+	"github.com/context-solutions-inc/secure-gateway/internal/e2ee"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/test/testclient"
 )
 
 // e2eeSessions builds the mobile and desktop sessions for one connection from a

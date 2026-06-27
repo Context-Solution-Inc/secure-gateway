@@ -13,7 +13,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // SlotKey identifies the single live connection slot for a (pair, role). Per

@@ -5,7 +5,7 @@
 #
 #   # --- on the secure builder (has the Go toolchain + repo source) ---
 #   docker login ghcr.io                      # PAT with write:packages
-#   make push VERSION=1.4.2                    # builds + pushes ghcr.io/lley154/secure-gateway/{relay,auth}:1.4.2
+#   make push VERSION=1.4.2                    # builds + pushes ghcr.io/context-solutions-inc/secure-gateway/{relay,auth}:1.4.2
 #   # (cross-arch? use `docker buildx build --platform linux/amd64 ...`)
 #
 #   # --- on the VPS: files needed, in one directory ---

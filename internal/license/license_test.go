@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/license"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/license"
 )
 
 func TestEvaluate(t *testing.T) {

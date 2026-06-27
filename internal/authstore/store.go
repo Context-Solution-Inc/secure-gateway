@@ -17,7 +17,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // Errors returned by Store implementations.

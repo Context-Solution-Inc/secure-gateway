@@ -20,9 +20,9 @@ ARG BUILD_DATE=unknown
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w \
-      -X github.com/lley154/secure-gateway/internal/version.Version=${VERSION} \
-      -X github.com/lley154/secure-gateway/internal/version.Commit=${COMMIT} \
-      -X github.com/lley154/secure-gateway/internal/version.BuildDate=${BUILD_DATE}" \
+      -X github.com/context-solutions-inc/secure-gateway/internal/version.Version=${VERSION} \
+      -X github.com/context-solutions-inc/secure-gateway/internal/version.Commit=${COMMIT} \
+      -X github.com/context-solutions-inc/secure-gateway/internal/version.BuildDate=${BUILD_DATE}" \
     -o /out/relay ./cmd/relay
 
 # --- Runtime stage ---

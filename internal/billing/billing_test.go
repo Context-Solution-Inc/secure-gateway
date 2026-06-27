@@ -10,13 +10,13 @@ import (
 	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/authstore/memory"
-	"github.com/lley154/secure-gateway/internal/backplane"
-	bpmem "github.com/lley154/secure-gateway/internal/backplane/memory"
-	"github.com/lley154/secure-gateway/internal/billing"
-	"github.com/lley154/secure-gateway/internal/billing/fake"
-	"github.com/lley154/secure-gateway/internal/license"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore/memory"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	bpmem "github.com/context-solutions-inc/secure-gateway/internal/backplane/memory"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing/fake"
+	"github.com/context-solutions-inc/secure-gateway/internal/license"
 )
 
 const secret = "whsec_test_secret"

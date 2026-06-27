@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/lley154/secure-gateway/internal/e2ee"
+	"github.com/context-solutions-inc/secure-gateway/internal/e2ee"
 )
 
 // TestPairingCapacityNotExceededUnderConcurrency is the SG-16 regression: the

@@ -8,7 +8,7 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 
-	"github.com/lley154/secure-gateway/internal/billing/fake"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing/fake"
 )
 
 // TestDesktopCheckoutClaimFlow exercises the full desktop subscription

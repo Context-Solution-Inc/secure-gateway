@@ -9,8 +9,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/lley154/secure-gateway/internal/config"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/config"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // TestRateLimitPerIPRejectsBeforeUpgrade verifies the relay returns HTTP 429 +

@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
 )
 
 type entry struct {

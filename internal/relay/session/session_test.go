@@ -11,10 +11,10 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 func testClaims() *token.Claims {

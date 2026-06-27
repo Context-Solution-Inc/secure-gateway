@@ -16,13 +16,13 @@ import (
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/lley154/secure-gateway/internal/config"
-	"github.com/lley154/secure-gateway/internal/httpsec"
-	"github.com/lley154/secure-gateway/internal/metrics"
-	"github.com/lley154/secure-gateway/internal/ratelimit"
-	"github.com/lley154/secure-gateway/internal/relay/hub"
-	"github.com/lley154/secure-gateway/internal/relay/session"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/config"
+	"github.com/context-solutions-inc/secure-gateway/internal/httpsec"
+	"github.com/context-solutions-inc/secure-gateway/internal/metrics"
+	"github.com/context-solutions-inc/secure-gateway/internal/ratelimit"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/hub"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // Deps are the relay dependencies the server needs to serve connections.

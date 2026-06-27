@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // Store is a concurrency-safe in-memory authstore.Store.

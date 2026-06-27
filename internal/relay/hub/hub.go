@@ -13,11 +13,11 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/metrics"
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/metrics"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
 )
 
 // Refresher re-validates an auth_refresh token over the live socket (FR-3.5).

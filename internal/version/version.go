@@ -3,7 +3,7 @@ package version
 
 // These are overridden at build time, e.g.:
 //
-//	go build -ldflags="-X github.com/lley154/secure-gateway/internal/version.Commit=$(git rev-parse HEAD)"
+//	go build -ldflags="-X github.com/context-solutions-inc/secure-gateway/internal/version.Commit=$(git rev-parse HEAD)"
 var (
 	// Version is the semantic version of the build (e.g. "v0.1.0" or "dev").
 	Version = "dev"

@@ -8,7 +8,7 @@
 // call sites continue to compile unchanged.
 package devtoken
 
-import "github.com/lley154/secure-gateway/internal/signer"
+import "github.com/context-solutions-inc/secure-gateway/internal/signer"
 
 // Signer mints tokens with a single asymmetric key. Alias of signer.Signer.
 type Signer = signer.Signer

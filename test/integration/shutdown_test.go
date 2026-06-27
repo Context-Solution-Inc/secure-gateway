@@ -7,8 +7,8 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // TestGracefulDrain verifies that on drain a live session receives a

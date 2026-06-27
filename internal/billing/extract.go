@@ -7,7 +7,7 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 
-	"github.com/lley154/secure-gateway/internal/license"
+	"github.com/context-solutions-inc/secure-gateway/internal/license"
 )
 
 // customerIDOf returns the customer id from a (possibly id-only) Customer.

@@ -9,7 +9,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/lley154/secure-gateway/internal/httpsec"
+	"github.com/context-solutions-inc/secure-gateway/internal/httpsec"
 )
 
 // ServerConfig is the HTTP/TLS lifecycle configuration for the auth server.

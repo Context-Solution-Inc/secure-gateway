@@ -37,7 +37,7 @@ spec:
         - name: relay
           # Pin to an immutable release reference before deploying. Prefer a digest
           # (registry/relay@sha256:...); a versioned tag is the minimum (SG-12).
-          image: ghcr.io/lley154/secure-gateway/relay:v0.0.0 # REPLACE: pin to @sha256 digest for prod
+          image: ghcr.io/context-solutions-inc/secure-gateway/relay:v0.0.0 # REPLACE: pin to @sha256 digest for prod
           imagePullPolicy: IfNotPresent
           ports:
             - { name: wss, containerPort: 8443 }

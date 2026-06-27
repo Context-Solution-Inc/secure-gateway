@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/httpsec"
-	"github.com/lley154/secure-gateway/internal/ratelimit"
+	"github.com/context-solutions-inc/secure-gateway/internal/httpsec"
+	"github.com/context-solutions-inc/secure-gateway/internal/ratelimit"
 )
 
 // rateLimiters holds the auth service's in-process abuse controls (PRD §10.2):

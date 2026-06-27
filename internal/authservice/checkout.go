@@ -8,10 +8,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/billing"
-	"github.com/lley154/secure-gateway/internal/license"
-	"github.com/lley154/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing"
+	"github.com/context-solutions-inc/secure-gateway/internal/license"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
 )
 
 // Desktop subscription onboarding (claim-token flow). The desktop has no account

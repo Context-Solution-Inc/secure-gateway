@@ -9,10 +9,10 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/lley154/secure-gateway/internal/httpsec"
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/relay/session"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/httpsec"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // handleConnect authenticates and upgrades a client connection (FR-1, FR-3).

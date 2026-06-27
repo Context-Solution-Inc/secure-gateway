@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // Run exercises the full Store contract against the store returned by newStore.

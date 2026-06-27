@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
 )
 
 // errUnauthorized is the generic auth failure; handlers map it to 401.

@@ -9,11 +9,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/authmetrics"
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/billing"
-	"github.com/lley154/secure-gateway/internal/signer"
+	"github.com/context-solutions-inc/secure-gateway/internal/authmetrics"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing"
+	"github.com/context-solutions-inc/secure-gateway/internal/signer"
 )
 
 // Service holds the dependencies shared by all handlers.

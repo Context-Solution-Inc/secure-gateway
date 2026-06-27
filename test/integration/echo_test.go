@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 func ctxT(t *testing.T) context.Context {

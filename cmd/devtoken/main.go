@@ -19,8 +19,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/lley154/secure-gateway/internal/devtoken"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/devtoken"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // keyFile is the persisted signer material (private key PEM + metadata) so the

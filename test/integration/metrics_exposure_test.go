@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/lley154/secure-gateway/internal/authservice"
+	"github.com/context-solutions-inc/secure-gateway/internal/authservice"
 )
 
 // TestMetricsOffMainMuxWhenPrivateAddrSet is the SG-06/SG-11 regression: when a

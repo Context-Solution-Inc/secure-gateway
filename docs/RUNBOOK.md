@@ -225,7 +225,7 @@ The `push` Make target builds both registry-tagged images and pushes them (here
 
 ```sh
 docker login ghcr.io                                       # push credential (a PAT with write:packages)
-make push VERSION=1.0.0                                     # defaults to IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway
+make push VERSION=1.0.0                                     # defaults to IMAGE_REGISTRY=ghcr.io/context-solutions-inc/secure-gateway
 ```
 
 It refuses the `dev`/`latest` tags so prod always gets a real, immutable
@@ -233,7 +233,7 @@ artifact. Override `IMAGE_REGISTRY=…` for a different registry. Equivalent to 
 raw commands:
 
 ```sh
-export IMAGE_REGISTRY=ghcr.io/lley154/secure-gateway IMAGE_TAG=1.0.0
+export IMAGE_REGISTRY=ghcr.io/context-solutions-inc/secure-gateway IMAGE_TAG=1.0.0
 docker build -f Dockerfile      --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/relay:$IMAGE_TAG .
 docker build -f Dockerfile.auth --build-arg VERSION=$IMAGE_TAG -t $IMAGE_REGISTRY/auth:$IMAGE_TAG  .
 docker push $IMAGE_REGISTRY/relay:$IMAGE_TAG

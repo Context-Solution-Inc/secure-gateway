@@ -9,9 +9,9 @@ import (
 
 	stripe "github.com/stripe/stripe-go/v82"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/backplane"
-	"github.com/lley154/secure-gateway/internal/billing/fake"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/backplane"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing/fake"
 )
 
 // provisionLicense drives a checkout webhook to provision a license with the

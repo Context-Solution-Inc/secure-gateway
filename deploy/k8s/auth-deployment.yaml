@@ -30,7 +30,7 @@ spec:
         - name: auth
           # Pin to an immutable release reference before deploying. Prefer a digest
           # (registry/auth@sha256:...); a versioned tag is the minimum (SG-12).
-          image: ghcr.io/lley154/secure-gateway/auth:v0.0.0 # REPLACE: pin to @sha256 digest for prod
+          image: ghcr.io/context-solutions-inc/secure-gateway/auth:v0.0.0 # REPLACE: pin to @sha256 digest for prod
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 8080 }

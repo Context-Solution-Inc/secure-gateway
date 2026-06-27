@@ -9,10 +9,10 @@ import (
 	"github.com/coder/websocket"
 	stripe "github.com/stripe/stripe-go/v82"
 
-	"github.com/lley154/secure-gateway/internal/authstore"
-	"github.com/lley154/secure-gateway/internal/billing/fake"
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/test/testclient"
+	"github.com/context-solutions-inc/secure-gateway/internal/authstore"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing/fake"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/test/testclient"
 )
 
 // TestSubscriptionLifecycleE2E is the M2 exit criterion: purchase → use → fail

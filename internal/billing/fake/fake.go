@@ -16,7 +16,7 @@ import (
 	stripe "github.com/stripe/stripe-go/v82"
 	"github.com/stripe/stripe-go/v82/webhook"
 
-	"github.com/lley154/secure-gateway/internal/billing"
+	"github.com/context-solutions-inc/secure-gateway/internal/billing"
 )
 
 // API is an in-memory billing.StripeAPI.

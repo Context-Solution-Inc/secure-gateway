@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/lley154/secure-gateway/internal/logging"
-	"github.com/lley154/secure-gateway/internal/relay/protocol"
-	"github.com/lley154/secure-gateway/internal/relay/session"
-	"github.com/lley154/secure-gateway/internal/token"
+	"github.com/context-solutions-inc/secure-gateway/internal/logging"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/protocol"
+	"github.com/context-solutions-inc/secure-gateway/internal/relay/session"
+	"github.com/context-solutions-inc/secure-gateway/internal/token"
 )
 
 // refresher re-validates auth_refresh tokens over the live socket (FR-3.5).
