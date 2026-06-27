@@ -32,7 +32,7 @@ subprojects {
             repositories {
                 maven {
                     name = "GitHubPackages"
-                    url = uri("https://maven.pkg.github.com/Context-Solution-Inc/secure-gateway")
+                    url = uri("https://maven.pkg.github.com/Context-Solutions-Inc/secure-gateway")
                     credentials {
                         username = (findProperty("gpr.user") as String?) ?: System.getenv("GITHUB_ACTOR")
                         password = (findProperty("gpr.key") as String?) ?: System.getenv("GITHUB_TOKEN")
@@ -101,24 +101,24 @@ fun MavenPublication.configureSdkPom(artifact: String) {
             "End-to-end-encrypted mobile↔desktop relay client SDK " +
                 "(libsodium X25519 + XChaCha20-Poly1305).",
         )
-        url.set("https://github.com/Context-Solution-Inc/secure-gateway")
+        url.set("https://github.com/Context-Solutions-Inc/secure-gateway")
         licenses {
             license {
                 name.set("MIT License")
-                url.set("https://github.com/Context-Solution-Inc/secure-gateway/blob/main/LICENSE")
+                url.set("https://github.com/Context-Solutions-Inc/secure-gateway/blob/main/LICENSE")
             }
         }
         developers {
             developer {
                 name.set("Context Solutions Inc.")
                 organization.set("Context Solutions Inc.")
-                organizationUrl.set("https://github.com/Context-Solution-Inc")
+                organizationUrl.set("https://github.com/Context-Solutions-Inc")
             }
         }
         scm {
-            url.set("https://github.com/Context-Solution-Inc/secure-gateway")
-            connection.set("scm:git:https://github.com/Context-Solution-Inc/secure-gateway.git")
-            developerConnection.set("scm:git:git@github.com:Context-Solution-Inc/secure-gateway.git")
+            url.set("https://github.com/Context-Solutions-Inc/secure-gateway")
+            connection.set("scm:git:https://github.com/Context-Solutions-Inc/secure-gateway.git")
+            developerConnection.set("scm:git:git@github.com:Context-Solutions-Inc/secure-gateway.git")
         }
     }
 }

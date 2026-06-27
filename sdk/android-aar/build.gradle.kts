@@ -72,24 +72,24 @@ afterEvaluate {
                         "End-to-end-encrypted mobile↔desktop relay client SDK " +
                             "(libsodium X25519 + XChaCha20-Poly1305), Android/lazysodium-android build.",
                     )
-                    url.set("https://github.com/Context-Solution-Inc/secure-gateway")
+                    url.set("https://github.com/Context-Solutions-Inc/secure-gateway")
                     licenses {
                         license {
                             name.set("MIT License")
-                            url.set("https://github.com/Context-Solution-Inc/secure-gateway/blob/main/LICENSE")
+                            url.set("https://github.com/Context-Solutions-Inc/secure-gateway/blob/main/LICENSE")
                         }
                     }
                     developers {
                         developer {
                             name.set("Context Solutions Inc.")
                             organization.set("Context Solutions Inc.")
-                            organizationUrl.set("https://github.com/Context-Solution-Inc")
+                            organizationUrl.set("https://github.com/Context-Solutions-Inc")
                         }
                     }
                     scm {
-                        url.set("https://github.com/Context-Solution-Inc/secure-gateway")
-                        connection.set("scm:git:https://github.com/Context-Solution-Inc/secure-gateway.git")
-                        developerConnection.set("scm:git:git@github.com:Context-Solution-Inc/secure-gateway.git")
+                        url.set("https://github.com/Context-Solutions-Inc/secure-gateway")
+                        connection.set("scm:git:https://github.com/Context-Solutions-Inc/secure-gateway.git")
+                        developerConnection.set("scm:git:git@github.com:Context-Solutions-Inc/secure-gateway.git")
                     }
                 }
             }

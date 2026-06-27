@@ -79,7 +79,7 @@ The SDK publishes `com.contextsolutions.securegateway:{core,java,android}` two w
 ```
 
 `publish` targets this repo's **GitHub Packages** Maven registry
-(`https://maven.pkg.github.com/Context-Solution-Inc/secure-gateway`). Credentials come from
+(`https://maven.pkg.github.com/Context-Solutions-Inc/secure-gateway`). Credentials come from
 gradle props `gpr.user`/`gpr.key` or env `GITHUB_ACTOR`/`GITHUB_TOKEN` (a PAT / the Actions
 token with `read:packages` to consume, `write:packages` to publish).
 
