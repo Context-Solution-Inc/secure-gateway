@@ -8,10 +8,10 @@
 /deploy/compose/.env
 /deploy/compose/keys/
 
-# Model artifacts served for download — large/provisioned on the host, keep the
-# directory tracked (.gitkeep) but never commit the blobs themselves.
-/deploy/compose/models/*
-!/deploy/compose/models/.gitkeep
+# Download media served for download (e.g. downloads/models/*) — large/provisioned
+# on the host, keep the directory tracked (.gitkeep) but never commit the blobs.
+/deploy/compose/downloads/**
+!/deploy/compose/downloads/.gitkeep
 
 # Local environment files (keep .env.example tracked)
 .env

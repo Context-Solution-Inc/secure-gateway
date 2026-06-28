@@ -32,8 +32,8 @@ in [`deploy/compose/`](../deploy/compose): `docker-compose.prod.yml`, `Caddyfile
 and `.env.example`.
 
 **1. DNS** — point three A records at the VPS public IP:
-`relay.example.com`, `auth.example.com`, and `models.example.com` (the AI model
-download host). All three terminate at the same Caddy edge.
+`relay.example.com`, `auth.example.com`, and `downloads.example.com` (the download
+media host, e.g. `/models/*`). All three terminate at the same Caddy edge.
 
 **2. VPS prep** — install Docker Engine + the compose plugin, then apply the host
 kernel/ulimit tuning so the box can hold many connections (full rationale and
@@ -109,7 +109,7 @@ Postgres stay on the internal Docker network and must never be exposed.
 
 ```sh
 cd deploy/compose
-cp .env.example .env          # set RELAY_HOST/AUTH_HOST/MODELS_HOST/ACME_EMAIL/JWT_ISSUER
+cp .env.example .env          # set RELAY_HOST/AUTH_HOST/DOWNLOADS_HOST/ACME_EMAIL/JWT_ISSUER
                               # and real POSTGRES_PASSWORD, REDIS_PASSWORD, Stripe secrets, admin key
 mkdir -p keys
 go run ../../cmd/devtoken -gen-keys -out-dir ./keys -alg ES256   # writes keys/relay.key.json
@@ -123,20 +123,24 @@ sudo chown -R 65532:65532 keys && sudo chmod 0750 keys && sudo chmod 0640 keys/r
 `keys/relay.key.json`: losing it invalidates every issued token (rotate it via the
 JWKS to roll keys, ≤ 90 days per PRD §10.2).
 
-**3b. Model artifacts** — the `models` service serves files from `deploy/compose/models/`
-(a read-only bind mount). Provision them on the host out-of-band; unlike `keys/`
-these are **not** secret and only need to be world-readable:
+**3b. Download media** — the `downloads` service serves files from `deploy/compose/downloads/`
+(a read-only bind mount) rooted at `/srv`, so the URL path maps onto subdirectories:
+`downloads/models/x` is served at `https://<DOWNLOADS_HOST>/models/x`. Add a new media
+type by creating a new subdir (`downloads/<type>/`) — no compose/Caddy change. Provision
+them on the host out-of-band; unlike `keys/` these are **not** secret, but the dirs need
+the traverse bit (`0755`) and the files `0644` so the container uid 65532 can read them:
 
 ```sh
-mkdir -p models
-rsync -P model.gguf user@vps:~/secure-gateway/models/   # or scp/aws s3 cp …
-chmod 0644 models/*                                      # readable by the container uid 65532
+mkdir -p downloads/models
+rsync -P model.gguf user@vps:~/secure-gateway/downloads/models/   # or scp/aws s3 cp …
+chmod 0755 downloads downloads/models                             # dirs traversable by uid 65532
+chmod 0644 downloads/models/*                                     # files readable by uid 65532
 ```
 
-The blobs are gitignored (only `models/.gitkeep` is tracked). `static-web-server`
+The blobs are gitignored (only `downloads/.gitkeep` is tracked). `static-web-server`
 serves them with HTTP byte-range support, so large downloads resume. Anyone with
 the URL can fetch them — gate the host (Caddy `forward_auth` / signed URLs) before
-publishing private models.
+publishing private media.
 
 **4. Launch** (run from `deploy/compose/` so the build context and volumes resolve):
 
@@ -153,10 +157,10 @@ curl -fsS https://auth.example.com/healthz && echo
 curl -fsS https://relay.example.com/healthz && echo
 curl -fsS https://auth.example.com/.well-known/jwks.json | head -c 80; echo
 
-# Model download host — headers should show Accept-Ranges: bytes, and a ranged
+# Download media host — headers should show Accept-Ranges: bytes, and a ranged
 # request should return 206 Partial Content (resumable downloads):
-curl -fsSI https://models.example.com/model.gguf | grep -i accept-ranges
-curl -fsS -r 0-1023 -o /dev/null -w '%{http_code}\n' https://models.example.com/model.gguf
+curl -fsSI https://downloads.example.com/models/model.gguf | grep -i accept-ranges
+curl -fsS -r 0-1023 -o /dev/null -w '%{http_code}\n' https://downloads.example.com/models/model.gguf
 ```
 
 **6. Stripe** — in the Stripe dashboard (**Live mode** — production uses live
