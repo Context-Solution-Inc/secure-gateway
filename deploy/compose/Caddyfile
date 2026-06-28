@@ -23,11 +23,12 @@
 	reverse_proxy auth:8080
 }
 
-# Public AI model downloads -> internal static server (static-web-server). Caddy
-# terminates TLS and streams the response; the upstream serves plain HTTP with
-# byte-range support so large downloads resume. NOTE: this serves anything under
-# /models to anyone with the URL — gate it (forward_auth / signed URLs) before
-# publishing private models.
-{$MODELS_HOST} {
-	reverse_proxy models:8080
+# Public download media -> internal static server (static-web-server). Path-based
+# categories map onto subdirs of the server root (e.g. /models/* -> /srv/models/*).
+# Caddy terminates TLS and streams the response; the upstream serves plain HTTP with
+# byte-range support so large downloads resume. NOTE: this serves anything under this
+# host to anyone with the URL — gate it (forward_auth / signed URLs) before
+# publishing private media.
+{$DOWNLOADS_HOST} {
+	reverse_proxy downloads:8080
 }

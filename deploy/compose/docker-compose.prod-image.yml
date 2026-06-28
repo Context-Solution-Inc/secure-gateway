@@ -13,7 +13,7 @@
 #   #   Caddyfile                       (reverse-proxy / TLS config)
 #   #   .env                            (secrets + IMAGE_REGISTRY/IMAGE_TAG; you create it)
 #   #   keys/relay.key.json             (JWT signing key)
-#   #   models/                         (AI model files to serve; provisioned on the host)
+#   #   downloads/                      (download media to serve, e.g. downloads/models/*; provisioned on the host)
 #   # No repo source/Dockerfiles/Makefile on the VPS; pgdata & caddy_* are
 #   # Docker-managed named volumes, not host files. The relative mounts below
 #   # resolve against THIS directory, so always run compose from here.
@@ -46,7 +46,7 @@ services:
     depends_on:
       - relay
       - auth
-      - models
+      - downloads
     cap_drop: [ALL]
     cap_add: [NET_BIND_SERVICE]
     security_opt:
@@ -182,11 +182,14 @@ services:
       net.ipv4.ip_local_port_range: "1024 65535"
       net.ipv4.tcp_tw_reuse: "1"
 
-  models:
-    # Serves AI model files for download (static content). A single statically
-    # linked Rust binary on a scratch base — no shell, libc, or package manager,
-    # so the attack surface is essentially just the binary. Internal network
-    # only; the Caddy edge terminates TLS and reverse-proxies to it (SG-11).
+  downloads:
+    # Serves download media (static content) under path-based categories — AI model
+    # files live at /models/* (host ./downloads/models/), and new media types are
+    # just new subdirectories of ./downloads (served at /<subdir>/*, no compose/Caddy
+    # change needed). A single statically linked Rust binary on a scratch base — no
+    # shell, libc, or package manager, so the attack surface is essentially just the
+    # binary. Internal network only; the Caddy edge terminates TLS and
+    # reverse-proxies to it (SG-11).
     #
     # Pin the immutable version tag AND digest — never :latest in prod. The image
     # defaults to USER root and EXPOSE 80, so we MUST override: run as the same
@@ -196,7 +199,9 @@ services:
     image: ghcr.io/static-web-server/static-web-server:2.43.0@sha256:6acea6260b14e08dda986361e42640082fbfaab8d88c327de532bb13a3b22994
     restart: unless-stopped
     command:
-      - --root=/models
+      # Root is the downloads parent; the URL path maps onto subdirs, so
+      # https://<host>/models/<file> -> /srv/models/<file>.
+      - --root=/srv
       - --port=8080
       - --compression=false          # model blobs (gguf/safetensors) are already compressed
       - --directory-listing=false     # download by exact URL only; no index/enumeration
@@ -204,10 +209,12 @@ services:
       - --log-level=info
     user: "65532:65532"
     volumes:
-      # Operator provisions ./models out-of-band (rsync/scp). Unlike ./keys these
-      # are NOT secret, so they only need to be world-readable (0644) by uid 65532:
-      #   mkdir -p models && rsync model.gguf vps:~/secure-gateway/models/
-      - ./models:/models:ro
+      # Operator provisions ./downloads out-of-band (rsync/scp), one subdir per media
+      # type (e.g. ./downloads/models/). Unlike ./keys these are NOT secret, so the
+      # dirs need 0755 and the files 0644 so uid 65532 can traverse + read them:
+      #   mkdir -p downloads/models && rsync model.gguf vps:~/secure-gateway/downloads/models/
+      #   chmod 0755 downloads downloads/models && chmod 0644 downloads/models/*
+      - ./downloads:/srv:ro
     read_only: true
     cap_drop: [ALL]
     security_opt:
