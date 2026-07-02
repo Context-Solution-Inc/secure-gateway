@@ -1,6 +1,7 @@
 import Foundation
 import Crypto      // CryptoKit on Apple platforms
 import Sodium
+import Clibsodium  // direct C API for explicit-nonce XChaCha20-Poly1305 seal
 
 /// E2EE crypto primitives (PRD FR-5), matching the Go reference `internal/e2ee/e2ee.go` and
 /// the JVM SDK byte-for-byte. The interop vectors in `internal/e2ee/testdata/vectors.json`
@@ -75,15 +76,23 @@ public enum Crypto {
     }
 
     /// XChaCha20-Poly1305 seal with an explicit nonce. Returns ciphertext+tag (no nonce).
+    /// swift-sodium's Swift `encrypt` always generates its own nonce, so we call the libsodium C
+    /// function directly (mirroring swift-sodium's internal call) to pass our deterministic nonce.
     static func aeadSeal(key: Data, nonce: Data, aad: Data, plaintext: Data) throws -> Data {
-        guard let ct = sodium.aead.xchacha20poly1305ietf.encrypt(
-            message: [UInt8](plaintext),
-            secretKey: [UInt8](key),
-            nonce: [UInt8](nonce),
-            additionalData: [UInt8](aad)) else {
-            throw CryptoError.sealFailed
-        }
-        return Data(ct)
+        let msg = [UInt8](plaintext)
+        let ad = [UInt8](aad)
+        let npub = [UInt8](nonce)
+        let sk = [UInt8](key)
+        let abytes = Int(crypto_aead_xchacha20poly1305_ietf_abytes())
+        var ct = [UInt8](repeating: 0, count: msg.count + abytes)
+        var ctLen: UInt64 = 0
+        let rc = crypto_aead_xchacha20poly1305_ietf_encrypt(
+            &ct, &ctLen,
+            msg, UInt64(msg.count),
+            ad, UInt64(ad.count),
+            nil, npub, sk)
+        guard rc == 0 else { throw CryptoError.sealFailed }
+        return Data(ct.prefix(Int(ctLen)))
     }
 
     static func aeadOpen(key: Data, nonce: Data, aad: Data, cipher: Data) throws -> Data {

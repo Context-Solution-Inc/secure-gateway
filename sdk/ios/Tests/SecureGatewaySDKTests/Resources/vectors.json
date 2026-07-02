@@ -1,9 +1,9 @@
 {
   "scheme": {
-    "kdf": "HKDF-SHA256",
+    "kdf": "HKDF-SHA256 over ikm = ss || ee || md || dm (ss=DH(mIdentity,dIdentity), ee=DH(mEphemeral,dEphemeral), md=DH(mIdentity,dEphemeral), dm=DH(dIdentity,mEphemeral))",
     "aead": "XChaCha20-Poly1305 (24-byte nonce)",
-    "salt": "mobile_handshake_nonce || desktop_handshake_nonce",
-    "info": "secure-gateway/e2ee/v1|<dir>  (dir = m2d for mobile->desktop, d2m for desktop->mobile)",
+    "salt": "mobile_ephemeral_public || desktop_ephemeral_public",
+    "info": "secure-gateway/e2ee/v2|<dir>  (dir = m2d for mobile->desktop, d2m for desktop->mobile)",
     "aad": "utf8(id) || big-endian uint64(ts)",
     "wire": "message_nonce(24) || aead_ciphertext(plaintext + 16-byte tag)"
   },
@@ -15,15 +15,17 @@
       "mobile_public": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
       "desktop_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
       "desktop_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
-      "mobile_handshake_nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
-      "desktop_handshake_nonce": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-      "key_m2d": "c12c111a9d010bb97248c3f2bf5c105c1ffba2b377219afcfd2ddd0b806c9204",
-      "key_d2m": "4ec61c9cc5f69a00062eab95214578642b96741a097659dc9ff5810d2b95ec06",
+      "mobile_ephemeral_private": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "mobile_ephemeral_public": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c",
+      "desktop_ephemeral_private": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "desktop_ephemeral_public": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+      "key_m2d": "82c82ca6d88b26b88ae99f72cb8eed3f16a60b922f93194ed6d532a77a461f96",
+      "key_d2m": "ca9c28843798b8a645fd2e6cdd4405489b570eb04dbe1761ae334ca03b3016be",
       "message_nonce": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7",
       "id": "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
       "ts": 1765432100123,
       "plaintext": "68656c6c6f206465736b746f702c207468697320697320746865206d6f62696c65",
-      "wire_ciphertext": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b757be2d7e23627f9798ce135c64074450d7b5bcb892334d04eae96ec2ac0cb47d4096cf5a01615b3fb80e2bf551a7d3aaf9"
+      "wire_ciphertext": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b715f6602487c1e66950f4c75b38d2b31135430d0281119e8ec05cf982992c7c715beda3340aee2b58099bb04a4d94c48c96"
     },
     {
       "name": "desktop_to_mobile_basic",
@@ -32,15 +34,17 @@
       "mobile_public": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
       "desktop_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
       "desktop_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
-      "mobile_handshake_nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
-      "desktop_handshake_nonce": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-      "key_m2d": "c12c111a9d010bb97248c3f2bf5c105c1ffba2b377219afcfd2ddd0b806c9204",
-      "key_d2m": "4ec61c9cc5f69a00062eab95214578642b96741a097659dc9ff5810d2b95ec06",
+      "mobile_ephemeral_private": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "mobile_ephemeral_public": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c",
+      "desktop_ephemeral_private": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "desktop_ephemeral_public": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+      "key_m2d": "82c82ca6d88b26b88ae99f72cb8eed3f16a60b922f93194ed6d532a77a461f96",
+      "key_d2m": "ca9c28843798b8a645fd2e6cdd4405489b570eb04dbe1761ae334ca03b3016be",
       "message_nonce": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7",
       "id": "0196a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c",
       "ts": 1765432100456,
       "plaintext": "61636b2066726f6d20746865206465736b746f702073696465",
-      "wire_ciphertext": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c955ece6183da2bca36e9b80bef774eb283c8cbb057190139d628977f492efb8b9d1e9937814633b00"
+      "wire_ciphertext": "b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c778292216bf62015c9b38555d4ecb6f06fcb284f09505d1f7cd59be51fdbaf4acadd164a1a2e3ef21fd"
     },
     {
       "name": "mobile_to_desktop_empty",
@@ -49,15 +53,17 @@
       "mobile_public": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
       "desktop_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
       "desktop_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
-      "mobile_handshake_nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
-      "desktop_handshake_nonce": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-      "key_m2d": "c12c111a9d010bb97248c3f2bf5c105c1ffba2b377219afcfd2ddd0b806c9204",
-      "key_d2m": "4ec61c9cc5f69a00062eab95214578642b96741a097659dc9ff5810d2b95ec06",
+      "mobile_ephemeral_private": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "mobile_ephemeral_public": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c",
+      "desktop_ephemeral_private": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "desktop_ephemeral_public": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+      "key_m2d": "82c82ca6d88b26b88ae99f72cb8eed3f16a60b922f93194ed6d532a77a461f96",
+      "key_d2m": "ca9c28843798b8a645fd2e6cdd4405489b570eb04dbe1761ae334ca03b3016be",
       "message_nonce": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7",
       "id": "empty-1",
       "ts": 1,
       "plaintext": "",
-      "wire_ciphertext": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7e67789b61b5720e6f1746e1646dc507f"
+      "wire_ciphertext": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7808c5667c3fd4c72f2565324bcb7dc1e"
     },
     {
       "name": "mobile_to_desktop_binary",
@@ -66,15 +72,17 @@
       "mobile_public": "07a37cbc142093c8b755dc1b10e86cb426374ad16aa853ed0bdfc0b2b86d1c7c",
       "desktop_private": "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40",
       "desktop_public": "5869aff450549732cbaaed5e5df9b30a6da31cb0e5742bad5ad4a1a768f1a67b",
-      "mobile_handshake_nonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
-      "desktop_handshake_nonce": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
-      "key_m2d": "c12c111a9d010bb97248c3f2bf5c105c1ffba2b377219afcfd2ddd0b806c9204",
-      "key_d2m": "4ec61c9cc5f69a00062eab95214578642b96741a097659dc9ff5810d2b95ec06",
+      "mobile_ephemeral_private": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+      "mobile_ephemeral_public": "392d174a38b3b1beafaf1fe824870841c5fa531bc6eafdb6402c124664488c1c",
+      "desktop_ephemeral_private": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+      "desktop_ephemeral_public": "493e82fc74464a59268817623d2053c5eb8e2cc4a988b4fee179ec6b010d531d",
+      "key_m2d": "82c82ca6d88b26b88ae99f72cb8eed3f16a60b922f93194ed6d532a77a461f96",
+      "key_d2m": "ca9c28843798b8a645fd2e6cdd4405489b570eb04dbe1761ae334ca03b3016be",
       "message_nonce": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7",
       "id": "binary-1",
       "ts": 9007199254740991,
       "plaintext": "000102fffe00807f",
-      "wire_ciphertext": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7990a815e65fac9c0fba3e202b5c83804bcca04f439f9d78a"
+      "wire_ciphertext": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e76eaf66a8b059c3d2e39da34fc488c24a3607b8476b384112"
     }
   ]
 }
